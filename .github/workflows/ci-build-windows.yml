@@ -141,6 +141,10 @@ jobs:
         with:
           name: vscode
 
+      - name: Add Cargo to bash PATH
+        shell: bash
+        run: echo "$USERPROFILE/.cargo/bin" >> $GITHUB_PATH
+
       - name: Build
         env:
           DISABLE_MSI: ${{ vars[format('DISABLE_{0}_MSI', ((github.ref == 'refs/heads/insider' || (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'insider')) && 'INSIDER' || 'STABLE'))] }}
