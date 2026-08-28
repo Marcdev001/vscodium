@@ -4,6 +4,26 @@ cd vscode || { echo "'vscode' dir not found"; exit 1; }
 
 npm run gulp "vscode-win32-${VSCODE_ARCH}-inno-updater"
 
+# --- Bundle Cline as a built-in extension ---
+CLINE_VSIX="../bundled-extensions/saoudrizwan.claude-dev-4.1.16.vsix"
+CLINE_TARGET="../VSCode-win32-${VSCODE_ARCH}/resources/app/extensions/saoudrizwan.claude-dev"
+if [[ -f "${CLINE_VSIX}" ]]; then
+  echo "Bundling Cline built-in extension from ${CLINE_VSIX}"
+  rm -rf "${CLINE_TARGET}"
+  mkdir -p "${CLINE_TARGET}"
+  7z.exe x "${CLINE_VSIX}" -o"${CLINE_TARGET}/_vsix_tmp" -y > /dev/null
+  if [[ -d "${CLINE_TARGET}/_vsix_tmp/extension" ]]; then
+    cp -r "${CLINE_TARGET}/_vsix_tmp/extension/." "${CLINE_TARGET}/"
+  else
+    cp -r "${CLINE_TARGET}/_vsix_tmp/." "${CLINE_TARGET}/"
+  fi
+  rm -rf "${CLINE_TARGET}/_vsix_tmp"
+  echo "Cline bundled into ${CLINE_TARGET}"
+else
+  echo "WARNING: Cline vsix not found at ${CLINE_VSIX} - skipping"
+fi
+# --- End Bundle Cline ---
+
 # . ../build/windows/appx/build.sh
 
 if [[ "${SHOULD_BUILD_ZIP}" != "no" ]]; then
