@@ -1,0 +1,22 @@
+{
+  "name": "albion-verifier",
+  "version": "1.0.0",
+  "description": "Albion AI Code Editor - Local Verification Engine + Conversation Continuity",
+  "main": "verifier.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "verify": "node verifier.js",
+    "test:syntax": "node -c verifier.js && node -c supabase-autosave.js && echo \"All files OK\"",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.114.0",
+    "dotenv": "^17.4.2"
+  }
+}
