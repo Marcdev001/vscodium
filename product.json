@@ -640,5 +640,20 @@
     "gruntfuggly.todo-tree": {
       "default": false
     }
+  },
+  "configurationDefaults": {
+    "albion.verifierEnabled": true,
+    "albion.verifierLanguage": "auto",
+    "albion.autosaveEnabled": true,
+    "albion.autosaveDebounceMs": 2000,
+    "albion.maxVerificationRetries": 3,
+    "cline.mcpServers": {
+      "albion-verifier": {
+        "command": "node",
+        "args": ["${env:ALBION_VERIFIER_PATH}/verifier.js"],
+        "disabled": false,
+        "alwaysAllow": ["verify_code"]
+      }
+    }
   }
 }

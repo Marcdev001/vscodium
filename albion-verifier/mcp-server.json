@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "albion-verifier": {
+      "command": "node",
+      "args": ["${env:ALBION_VERIFIER_PATH}/verifier.js"],
+      "disabled": false,
+      "alwaysAllow": ["verify_code"]
+    }
+  }
+}

@@ -292,4 +292,51 @@ elif [[ "${OS_NAME}" == "windows" ]]; then
   sed -i 's|Microsoft Corporation|VSCodium|' build/win32/code.iss
 fi
 
+
+# ============================================================
+# ALBION: Bundle verifier companion module into the binary
+# ============================================================
+# SECURITY: Do NOT copy albion-proxy/ here. The proxy holds
+# SUPABASE_SERVICE_KEY and runs cloud-only. Never ship backend
+# secrets or server code inside the desktop installer.
+# ============================================================
+echo "📦 Bundling Albion verifier module..."
+
+VERIFIER_DEST="resources/albion/verifier"
+mkdir -p "${VERIFIER_DEST}"
+
+# Core scripts (verifier.js uses ONLY built-in Node modules — zero deps)
+cp ../albion-verifier/verifier.js              "${VERIFIER_DEST}/"
+cp ../albion-verifier/supabase-autosave.js     "${VERIFIER_DEST}/"
+cp ../albion-verifier/albion-lifecycle.js      "${VERIFIER_DEST}/"
+cp ../albion-verifier/package.json             "${VERIFIER_DEST}/"
+cp ../albion-verifier/mcp-server.json          "${VERIFIER_DEST}/"
+
+# Bundle the pre-installed @supabase/supabase-js directly.
+# This eliminates any npm install step on user's machine — critical for
+# users on limited data plans (Nigerian/African devs are the primary target).
+if [[ -d "../albion-verifier/node_modules" ]]; then
+  mkdir -p "${VERIFIER_DEST}/node_modules"
+  # Copy only the supabase client and its direct dependencies — not the full tree
+  for pkg in @supabase dotenv; do
+    if [[ -d "../albion-verifier/node_modules/${pkg}" ]]; then
+      cp -r "../albion-verifier/node_modules/${pkg}" "${VERIFIER_DEST}/node_modules/"
+    fi
+  done
+  echo "✅ Bundled pre-installed node_modules (no npm ci required on launch)."
+else
+  echo "⚠️  albion-verifier/node_modules not found — run: cd albion-verifier && npm ci"
+  echo "    Users will need network access on first launch to install dependencies."
+fi
+
+echo "✅ Albion verifier module bundled into ${VERIFIER_DEST}"
+# ============================================================
+
+# ============================================================
+# ALBION: Set ALBION_VERIFIER_PATH in Electron main process
+# ============================================================
+echo "⚙️ Injecting ALBION_VERIFIER_PATH into src/main.js..."
+sed -i '1i process.env["ALBION_VERIFIER_PATH"] = require("path").join(process.resourcesPath || __dirname, "albion/verifier");' src/main.js
+# ============================================================
+
 cd ..
