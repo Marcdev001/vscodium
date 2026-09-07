@@ -234,6 +234,102 @@ async function listSessions(userId, limit = 10) {
 }
 
 // ---------------------------------------------------------------------------
+// mergeContinuity(currentState, savedState, currentProjectPath)
+//
+// Intelligently merges a saved session state with the current editor state.
+// Prioritizes saved conversation messages to keep context intact, but remaps
+// file paths if the project was moved or opened under a different directory.
+// ---------------------------------------------------------------------------
+function mergeContinuity(currentState = {}, savedState = {}, currentProjectPath = null) {
+  if (!savedState || !savedState.messages) {
+    return currentState;
+  }
+
+  const merged = { ...currentState };
+
+  // Always restore saved conversation history
+  merged.messages = Array.isArray(savedState.messages) ? [...savedState.messages] : [];
+
+  // Restore model and step preferences
+  merged.modelUsed = savedState.modelUsed || currentState.modelUsed || null;
+  merged.currentStep = savedState.currentStep || 'awaiting_user_input';
+  merged.tokenCount = savedState.tokenCount || 0;
+  merged.sessionId = savedState.sessionId || currentState.sessionId || null;
+
+  // Remap file paths if project moved
+  if (Array.isArray(savedState.fileEdits)) {
+    const oldProjectPath = savedState.projectPath;
+    merged.fileEdits = savedState.fileEdits.map((edit) => {
+      if (currentProjectPath && oldProjectPath && oldProjectPath !== currentProjectPath) {
+        const normalizedOld = oldProjectPath.replace(/\\/g, '/');
+        const normalizedNew = currentProjectPath.replace(/\\/g, '/');
+        const normalizedFile = (edit.filePath || '').replace(/\\/g, '/');
+        if (normalizedFile.startsWith(normalizedOld)) {
+          return {
+            ...edit,
+            filePath: normalizedFile.replace(normalizedOld, normalizedNew)
+          };
+        }
+      }
+      return { ...edit };
+    });
+  } else {
+    merged.fileEdits = currentState.fileEdits || [];
+  }
+
+  return merged;
+}
+
+/**
+ * restoreSessionSilently(userId, projectPath, cline)
+ *
+ * Automatically and silently restores the last session for this project and user
+ * on editor startup without prompting the user with a modal.
+ *
+ * @param {string} userId
+ * @param {string} projectPath
+ * @param {object} cline - Cline API instance
+ * @returns {Promise<{ restored: boolean, sessionId?: string, messageCount?: number }>}
+ */
+async function restoreSessionSilently(userId, projectPath, cline) {
+  if (!userId || !projectPath || !cline) {
+    return { restored: false, reason: 'missing_parameters' };
+  }
+
+  try {
+    const saved = await loadLastSession(userId, projectPath);
+    if (!saved || !saved.messages || saved.messages.length === 0) {
+      return { restored: false, reason: 'no_saved_session' };
+    }
+
+    const currentHistory = cline.getConversationHistory ? cline.getConversationHistory() : [];
+    // Only restore if current chat is blank/new
+    if (currentHistory && currentHistory.length > 0) {
+      return { restored: false, reason: 'chat_not_empty' };
+    }
+
+    const merged = mergeContinuity({}, saved, projectPath);
+
+    if (typeof cline.restoreConversation === 'function') {
+      cline.restoreConversation(merged.messages);
+    }
+    if (typeof cline.restoreFileEdits === 'function' && merged.fileEdits.length > 0) {
+      cline.restoreFileEdits(merged.fileEdits);
+    }
+
+    console.log(`[AUTOSAVE] Silently restored session ${saved.sessionId} (${merged.messages.length} messages)`);
+    return {
+      restored: true,
+      sessionId: saved.sessionId,
+      messageCount: merged.messages.length
+    };
+  } catch (err) {
+    console.warn('[AUTOSAVE] Silent restore skipped due to error:', err.message);
+    return { restored: false, error: err.message };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // flushAll()
 //
 // Flush all pending debounced saves immediately.
@@ -254,5 +350,8 @@ module.exports = {
   saveImmediately,
   loadLastSession,
   listSessions,
+  mergeContinuity,
+  restoreSessionSilently,
   flushAll
 };
+
