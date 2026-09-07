@@ -333,10 +333,38 @@ echo "✅ Albion verifier module bundled into ${VERIFIER_DEST}"
 # ============================================================
 
 # ============================================================
-# ALBION: Set ALBION_VERIFIER_PATH in Electron main process
+# ALBION: Inject VERIFIER_PATH into Electron main process
 # ============================================================
-echo "⚙️ Injecting ALBION_VERIFIER_PATH into src/main.js..."
-sed -i '1i process.env["ALBION_VERIFIER_PATH"] = require("path").join(process.resourcesPath || __dirname, "albion/verifier");' src/main.js
+echo "🔧 Injecting ALBION_VERIFIER_PATH into Electron main..."
+
+# Define correct paths based on VSCodium's CI build structure
+# Handles execution from inside vscode/ directory or from repo root
+ELECTRON_MAIN="src/vs/code/electron-main/main.ts"
+if [ ! -f "$ELECTRON_MAIN" ]; then
+  ELECTRON_MAIN="vscode/src/vs/code/electron-main/main.ts"
+fi
+if [ ! -f "$ELECTRON_MAIN" ]; then
+  ELECTRON_MAIN="src/main.js"
+fi
+if [ ! -f "$ELECTRON_MAIN" ]; then
+  ELECTRON_MAIN="vscode/src/main.js"
+fi
+
+if [ ! -f "$ELECTRON_MAIN" ]; then
+  echo "⚠️  Warning: Electron main entry point not found. Skipping ALBION_VERIFIER_PATH injection."
+  echo "   Checked: src/vs/code/electron-main/main.ts and vscode/src/vs/code/electron-main/main.ts"
+else
+  # Create injection line using a variable to avoid ALL shell quoting issues
+  INJECTION_LINE='process.env["ALBION_VERIFIER_PATH"] = require("path").join(process.resourcesPath || __dirname, "albion/verifier");'
+  
+  # Use cat + temp file instead of sed (works identically on Linux, macOS, Windows CI)
+  TMPFILE=$(mktemp)
+  echo "$INJECTION_LINE" > "$TMPFILE"
+  cat "$TMPFILE" "$ELECTRON_MAIN" > "${ELECTRON_MAIN}.tmp" && mv "${ELECTRON_MAIN}.tmp" "$ELECTRON_MAIN"
+  rm -f "$TMPFILE"
+  
+  echo "✅ ALBION_VERIFIER_PATH injected into $ELECTRON_MAIN"
+fi
 # ============================================================
 
 cd ..
