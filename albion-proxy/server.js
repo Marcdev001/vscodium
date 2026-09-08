@@ -16,6 +16,7 @@ const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
@@ -34,6 +35,7 @@ const PORT = process.env.PORT || 3000;
 const LITELLM_BASE_URL = process.env.LITELLM_BASE_URL || 'http://localhost:4000';
 const LITELLM_MASTER_KEY = process.env.LITELLM_MASTER_KEY || '';
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS || '*';
+const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || '';
 
 // ---------------------------------------------------------------------------
 // SUPABASE CLIENT (service role — server-side only, never expose to client)
@@ -58,8 +60,25 @@ const tierCaps = {
 // ---------------------------------------------------------------------------
 const app = express();
 app.use(helmet());
-app.use(cors({ origin: ALLOWED_ORIGINS }));
-app.use(express.json());
+app.use(cors({
+  origin: ALLOWED_ORIGINS,
+  exposedHeaders: [
+    'X-Albion-Usage-Percent',
+    'X-Albion-Active-Model',
+    'X-Albion-Tier',
+    'X-Albion-Usage-Warning',
+    'X-Albion-Current-Tokens',
+    'X-Albion-Cap-Tokens'
+  ]
+}));
+
+// Capture raw body for webhook HMAC signature verification
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
+
 
 // ---------------------------------------------------------------------------
 // MIDDLEWARE: authenticate
@@ -94,10 +113,10 @@ async function authenticate(req, res, next) {
 // ---------------------------------------------------------------------------
 // CAP CHECK: checkCapBeforeRoute
 // Queries Supabase for the user's subscription tier and current-cycle usage.
-// Returns the tier name if within cap, or 'flash_only' if over cap.
+// Calculates usage percentage, 80% soft warning, and 100% hard ceiling auto-downgrade.
 // CRITICAL: This MUST run BEFORE any request reaches a provider.
 // ---------------------------------------------------------------------------
-async function checkCapBeforeRoute(userId, estimatedTokens) {
+async function checkCapBeforeRoute(userId, estimatedTokens = 1000) {
   // 1. Get user's active subscription
   const { data: subscription, error: subError } = await supabase
     .from('subscriptions')
@@ -106,45 +125,52 @@ async function checkCapBeforeRoute(userId, estimatedTokens) {
     .eq('status', 'active')
     .single();
 
-  if (subError || !subscription) {
-    // No active subscription → treat as learner (most restrictive)
-    console.warn(`[CAP] No active subscription for user ${userId}, defaulting to learner`);
-    return 'flash_only';
-  }
-
-  const { tier, cycle_start } = subscription;
+  const tier = (subscription && subscription.tier && tierCaps[subscription.tier])
+    ? subscription.tier
+    : 'learner';
+  const cycleStart = subscription ? subscription.cycle_start : new Date(0).toISOString();
 
   // 2. Get current cycle usage via RPC
-  const { data: usageData, error: usageError } = await supabase
-    .rpc('get_current_cycle_usage', {
-      p_user_id: userId,
-      p_cycle_start: cycle_start
-    });
-
-  if (usageError) {
-    console.error(`[CAP] Usage RPC failed for user ${userId}:`, usageError.message);
-    // On RPC failure, enforce most restrictive cap as safety measure
-    return 'flash_only';
+  let currentUsage = 0;
+  try {
+    const { data: usageData, error: usageError } = await supabase
+      .rpc('get_current_cycle_usage', {
+        p_user_id: userId,
+        p_cycle_start: cycleStart
+      });
+    if (!usageError && typeof usageData === 'number') {
+      currentUsage = usageData;
+    }
+  } catch (err) {
+    console.warn(`[CAP] Usage RPC error for user ${userId}:`, err.message);
   }
 
-  const currentUsage = usageData || 0;
-  const caps = tierCaps[tier];
+  const caps = tierCaps[tier] || tierCaps.learner;
+  const primaryCap = caps.flash;
+  const usagePercent = Number(((currentUsage / primaryCap) * 100).toFixed(1));
+  const projectedUsage = currentUsage + estimatedTokens;
 
-  if (!caps) {
-    console.warn(`[CAP] Unknown tier "${tier}" for user ${userId}, forcing flash_only`);
-    return 'flash_only';
+  let warning = null;
+  let forceFlash = false;
+
+  // 100% Threshold: Auto-downgrade to flash, warning: hard_ceiling_reached
+  if (usagePercent >= 100 || projectedUsage > primaryCap) {
+    warning = 'hard_ceiling_reached';
+    forceFlash = true;
+  } else if (usagePercent >= 80) {
+    // 80% Threshold: Warning: approaching_limit
+    warning = 'approaching_limit';
+    forceFlash = false;
   }
 
-  // 3. Check if projected usage exceeds the flash cap (primary limit)
-  if (currentUsage + estimatedTokens > caps.flash) {
-    console.warn(
-      `[CAP] User ${userId} (${tier}) would exceed cap: ` +
-      `${currentUsage} + ${estimatedTokens} > ${caps.flash}. Forcing flash_only.`
-    );
-    return 'flash_only';
-  }
-
-  return tier;
+  return {
+    tier,
+    currentUsage,
+    tierCap: primaryCap,
+    usagePercent,
+    warning,
+    forceFlash
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -205,12 +231,23 @@ app.post('/chat', authenticate, async (req, res) => {
       });
     }
 
-    // STEP 4: Determine target model
+    // STEP 4: Determine target model (Strict Soft/Hard Ceiling enforcement)
     let targetModel;
-    if (capResult === 'flash_only') {
+    if (capResult.forceFlash) {
       targetModel = 'deepseek-v4-flash';
     } else {
       targetModel = model_preference || 'deepseek-v4-flash';
+    }
+
+    // Set custom transparency & fuel gauge response headers
+    res.setHeader('X-Albion-Usage-Percent', capResult.usagePercent.toString());
+    res.setHeader('X-Albion-Active-Model', targetModel);
+    res.setHeader('X-Albion-Tier', capResult.tier);
+    res.setHeader('X-Albion-Current-Tokens', capResult.currentUsage.toString());
+    res.setHeader('X-Albion-Cap-Tokens', capResult.tierCap.toString());
+
+    if (capResult.warning) {
+      res.setHeader('X-Albion-Usage-Warning', capResult.warning);
     }
 
     // STEP 5: Route via direct HTTP POST to LiteLLM (OpenAI-compatible)
@@ -226,14 +263,15 @@ app.post('/chat', authenticate, async (req, res) => {
         timeout: 30000,
         metadata: {
           user_id: userId,
-          tier: capResult,
+          tier: capResult.tier,
+          usage_percent: capResult.usagePercent,
           session_id: session_id || null,
           project_path: project_path || null
         }
       })
     });
 
-    // STEP 4: Parse response — throw on provider failure
+    // STEP 6: Parse response — throw on provider failure
     if (!providerResponse.ok) {
       const errorText = await providerResponse.text().catch(() => 'Unknown provider error');
       console.error(`[CHAT] Provider returned ${providerResponse.status} for user ${userId}: ${errorText}`);
@@ -242,7 +280,7 @@ app.post('/chat', authenticate, async (req, res) => {
 
     const data = await providerResponse.json();
 
-    // STEP 5: Synchronously log usage BEFORE responding to client
+    // STEP 7: Synchronously log usage BEFORE responding to client
     const { error: logError } = await supabase.from('usage_logs').insert({
       user_id: userId,
       model: targetModel,
@@ -258,7 +296,7 @@ app.post('/chat', authenticate, async (req, res) => {
       console.error(`[USAGE] Failed to log usage for user ${userId}:`, logError.message);
     }
 
-    // STEP 6: Return provider response to Cline
+    // STEP 8: Return provider response to Cline
     return res.json(data);
 
   } catch (err) {
@@ -270,6 +308,104 @@ app.post('/chat', authenticate, async (req, res) => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// ROUTE: POST /webhooks/paystack
+// Paystack webhook listener with HMAC SHA512 signature verification
+// Handles: charge.success, subscription.create, subscription.disable
+// ---------------------------------------------------------------------------
+app.post('/webhooks/paystack', async (req, res) => {
+  const signature = req.headers['x-paystack-signature'];
+
+  if (!signature || !PAYSTACK_SECRET_KEY) {
+    console.warn('[WEBHOOK] Missing Paystack signature or secret key not configured');
+    return res.status(401).json({ error: 'Missing or invalid signature' });
+  }
+
+  // Verify HMAC SHA512 signature
+  const rawBody = req.rawBody || Buffer.from(JSON.stringify(req.body));
+  const hash = crypto
+    .createHmac('sha512', PAYSTACK_SECRET_KEY)
+    .update(rawBody)
+    .digest('hex');
+
+  if (hash !== signature) {
+    console.error('[WEBHOOK] Invalid Paystack signature received');
+    return res.status(401).json({ error: 'Signature mismatch' });
+  }
+
+  const event = req.body;
+  if (!event || !event.event) {
+    return res.status(400).json({ error: 'Invalid event payload' });
+  }
+
+  const eventType = event.event;
+  const eventData = event.data || {};
+  console.log(`[WEBHOOK] Verified Paystack event: ${eventType} (ref: ${eventData.reference || 'n/a'})`);
+
+  try {
+    let targetUserId = eventData.metadata?.user_id || eventData.customer?.metadata?.user_id;
+
+    // Resolve user by email if not found directly in metadata
+    if (!targetUserId && eventData.customer?.email) {
+      const { data: userData } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', eventData.customer.email)
+        .single();
+      if (userData) targetUserId = userData.id;
+    }
+
+    // Process subscription events
+    if (eventType === 'charge.success' || eventType === 'subscription.create') {
+      const planTier = eventData.metadata?.tier || eventData.plan?.name?.toLowerCase() || 'starter';
+      const resolvedTier = tierCaps[planTier] ? planTier : 'starter';
+
+      if (targetUserId) {
+        await supabase
+          .from('subscriptions')
+          .upsert({
+            user_id: targetUserId,
+            tier: resolvedTier,
+            status: 'active',
+            cycle_start: new Date().toISOString()
+          }, {
+            onConflict: 'user_id'
+          });
+        console.log(`[WEBHOOK] Activated subscription (${resolvedTier}) for user ${targetUserId}`);
+      }
+    } else if (eventType === 'subscription.disable') {
+      if (targetUserId) {
+        await supabase
+          .from('subscriptions')
+          .update({ status: 'cancelled' })
+          .eq('user_id', targetUserId);
+        console.log(`[WEBHOOK] Cancelled subscription for user ${targetUserId}`);
+      }
+    }
+
+    // Log event to public.billing_events audit table
+    if (targetUserId) {
+      await supabase.from('billing_events').insert({
+        user_id: targetUserId,
+        event_type: eventType,
+        paystack_reference: eventData.reference || null,
+        amount: eventData.amount ? (eventData.amount / 100) : 0,
+        currency: eventData.currency || 'NGN',
+        status: 'success',
+        raw_payload: event
+      }).catch(err => {
+        console.error('[WEBHOOK] Failed to log billing_event:', err.message);
+      });
+    }
+
+    return res.status(200).json({ received: true });
+  } catch (err) {
+    console.error(`[WEBHOOK] Error processing event ${eventType}:`, err.message);
+    return res.status(500).json({ error: 'Webhook processing error' });
+  }
+});
+
 
 // ---------------------------------------------------------------------------
 // HEALTH CHECK
