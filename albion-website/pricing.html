@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Albion - Transparent AI Pricing for African Developers</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --heading: #f0f6fc;
+      --primary: #238636;
+      --primary-hover: #2ea043;
+      --accent: #58a6ff;
+      --warning: #d29922;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 40px 20px;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 60px;
+    }
+    header h1 {
+      font-size: 2.8rem;
+      color: var(--heading);
+      margin-bottom: 12px;
+    }
+    header p {
+      font-size: 1.2rem;
+      color: #8b949e;
+      max-width: 700px;
+      margin: 0 auto;
+    }
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 24px;
+      margin-bottom: 70px;
+    }
+    .pricing-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px 24px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+    .pricing-card.featured {
+      border-color: var(--accent);
+      box-shadow: 0 0 20px rgba(88, 166, 255, 0.15);
+    }
+    .tier-badge {
+      position: absolute;
+      top: -12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--accent);
+      color: #000;
+      font-weight: bold;
+      font-size: 0.8rem;
+      padding: 3px 12px;
+      border-radius: 20px;
+      text-transform: uppercase;
+    }
+    .tier-name {
+      font-size: 1.5rem;
+      color: var(--heading);
+      margin: 0 0 8px 0;
+    }
+    .tier-price {
+      font-size: 2.2rem;
+      font-weight: bold;
+      color: var(--heading);
+      margin-bottom: 4px;
+    }
+    .tier-price-ngn {
+      color: #8b949e;
+      font-size: 0.95rem;
+      margin-bottom: 24px;
+    }
+    .caps-list {
+      list-style: none;
+      padding: 0;
+      margin: 0 0 32px 0;
+      flex-grow: 1;
+    }
+    .caps-list li {
+      padding: 8px 0;
+      border-bottom: 1px solid #21262d;
+      font-size: 0.92rem;
+    }
+    .caps-list li strong {
+      color: var(--heading);
+    }
+    .btn {
+      display: block;
+      text-align: center;
+      padding: 12px 20px;
+      border-radius: 6px;
+      font-weight: 600;
+      text-decoration: none;
+      transition: background 0.2s;
+    }
+    .btn-primary {
+      background: var(--primary);
+      color: #fff;
+    }
+    .btn-primary:hover {
+      background: var(--primary-hover);
+    }
+    .btn-outline {
+      border: 1px solid var(--border);
+      color: var(--heading);
+    }
+    .btn-outline:hover {
+      background: #21262d;
+    }
+    .roster-section, .downloads-section {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 40px;
+      margin-bottom: 50px;
+    }
+    .roster-section h2, .downloads-section h2 {
+      color: var(--heading);
+      margin-top: 0;
+      margin-bottom: 24px;
+      text-align: center;
+    }
+    .roster-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+    }
+    .roster-table th, .roster-table td {
+      text-align: left;
+      padding: 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .roster-table th {
+      color: var(--heading);
+      background: #0d1117;
+    }
+    .download-buttons {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-top: 24px;
+    }
+    footer {
+      text-align: center;
+      padding: 40px 0;
+      border-top: 1px solid var(--border);
+      color: #8b949e;
+      font-size: 0.9rem;
+    }
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+      margin: 0 12px;
+    }
+    footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Albion AI Plans & Transparent Pricing</h1>
+      <p>Hard capped. Zero surprise bills. Designed for African developers with local fallback and honest token allocations.</p>
+    </header>
+
+    <div class="pricing-grid">
+      <!-- Free Tier -->
+      <div class="pricing-card">
+        <h3 class="tier-name">Free</h3>
+        <div class="tier-price">$0</div>
+        <div class="tier-price-ngn">₦0 / month</div>
+        <ul class="caps-list">
+          <li><strong>Muse Glimmer:</strong> Unlimited ($0 local model)</li>
+          <li>Cloud API Access: None</li>
+          <li>Offline AI code completion & edit</li>
+          <li>Zero internet data required for generation</li>
+        </ul>
+        <a href="#downloads" class="btn btn-outline">Download Free</a>
+      </div>
+
+      <!-- Learner Tier -->
+      <div class="pricing-card">
+        <h3 class="tier-name">Learner</h3>
+        <div class="tier-price">$2</div>
+        <div class="tier-price-ngn">₦3,200 / month</div>
+        <ul class="caps-list">
+          <li><strong>DeepSeek-V4-Flash:</strong> 2,000,000 tokens</li>
+          <li>Full repository indexing & memory</li>
+          <li>Auto-fallback to Muse Glimmer on cap</li>
+          <li>Hard ceiling protection (never overbills)</li>
+        </ul>
+        <a href="https://albion.dev/checkout?plan=learner" class="btn btn-primary">Choose Learner</a>
+      </div>
+
+      <!-- Starter Tier -->
+      <div class="pricing-card featured">
+        <div class="tier-badge">Most Popular</div>
+        <h3 class="tier-name">Starter</h3>
+        <div class="tier-price">$7</div>
+        <div class="tier-price-ngn">₦11,200 / month</div>
+        <ul class="caps-list">
+          <li><strong>DeepSeek-V4-Flash:</strong> 8,000,000 tokens</li>
+          <li><strong>Qwen3.6-35B-A3B:</strong> 1,500,000 tokens (Multimodal/UI)</li>
+          <li><strong>DeepSeek-V4-Pro:</strong> 500,000 tokens (Premium Toggle)</li>
+          <li><strong>GLM-5.2:</strong> 150,000 tokens (Frontend/Design)</li>
+          <li>Auto-fallback to Muse Glimmer on cap</li>
+        </ul>
+        <a href="https://albion.dev/checkout?plan=starter" class="btn btn-primary">Choose Starter</a>
+      </div>
+
+      <!-- Pro Tier -->
+      <div class="pricing-card">
+        <h3 class="tier-name">Pro</h3>
+        <div class="tier-price">$11</div>
+        <div class="tier-price-ngn">₦17,600 / month</div>
+        <ul class="caps-list">
+          <li><strong>DeepSeek-V4-Flash:</strong> 12,000,000 tokens</li>
+          <li><strong>Qwen3.6-35B-A3B:</strong> 3,000,000 tokens (Multimodal/UI)</li>
+          <li><strong>DeepSeek-V4-Pro:</strong> 1,000,000 tokens (Premium Toggle)</li>
+          <li><strong>GLM-5.2:</strong> 250,000 tokens (Frontend/Design)</li>
+          <li>Top-priority cloud routing queue</li>
+        </ul>
+        <a href="https://albion.dev/checkout?plan=pro" class="btn btn-primary">Choose Pro</a>
+      </div>
+    </div>
+
+    <!-- Model Roster Transparency Section -->
+    <div class="roster-section">
+      <h2>Model Roster Transparency</h2>
+      <p style="text-align: center; color: #8b949e;">Know exactly which AI model runs your code and why.</p>
+      <table class="roster-table">
+        <thead>
+          <tr>
+            <th>Task Type</th>
+            <th>Model</th>
+            <th>Cost Tier</th>
+            <th>Routing Trigger</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Routine text/code edits</td>
+            <td><strong>DeepSeek-V4-Flash</strong></td>
+            <td>Paid Plan</td>
+            <td>Auto-routed for 95% of tasks</td>
+          </tr>
+          <tr>
+            <td>Images / UI / Screenshots</td>
+            <td><strong>Qwen3.6-35B-A3B</strong></td>
+            <td>Paid Plan</td>
+            <td>Auto-routed when image context present</td>
+          </tr>
+          <tr>
+            <td>Hard reasoning / Complex refactors</td>
+            <td><strong>DeepSeek-V4-Pro</strong></td>
+            <td>Paid Plan</td>
+            <td><strong>Premium Toggle ONLY</strong></td>
+          </tr>
+          <tr>
+            <td>Design / Frontend generation</td>
+            <td><strong>GLM-5.2</strong></td>
+            <td>Paid Plan</td>
+            <td><strong>Premium Toggle ONLY</strong></td>
+          </tr>
+          <tr>
+            <td>Free tier / Offline / All caps exhausted</td>
+            <td><strong>Muse Glimmer</strong></td>
+            <td>$0 Free</td>
+            <td>Automatic fallback / Free mode</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Installer Downloads -->
+    <div class="downloads-section" id="downloads">
+      <h2>Download Albion Desktop</h2>
+      <p style="text-align: center; color: #8b949e;">The AI editor that works when your network doesn't.</p>
+      <div class="download-buttons">
+        <a href="https://github.com/Marcdev001/vscodium/releases/latest/download/Albion-Setup-x64.exe" class="btn btn-outline">🪟 Windows (x64 .exe)</a>
+        <a href="https://github.com/Marcdev001/vscodium/releases/latest/download/Albion-x64.dmg" class="btn btn-outline">🍎 macOS (Apple Silicon / Intel)</a>
+        <a href="https://github.com/Marcdev001/vscodium/releases/latest/download/albion-x64.deb" class="btn btn-outline">🐧 Linux (.deb / AppImage)</a>
+      </div>
+    </div>
+
+    <footer>
+      <p>© 2026 Albion Technologies. All rights reserved.</p>
+      <p>
+        <a href="https://albion.dev/terms">Terms of Service</a> |
+        <a href="https://albion.dev/privacy">Privacy Policy</a> |
+        <a href="https://albion.dev/account">Developer Account</a>
+      </p>
+    </footer>
+  </div>
+</body>
+</html>

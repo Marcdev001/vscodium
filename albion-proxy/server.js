@@ -46,14 +46,32 @@ const supabase = createClient(
 );
 
 // ---------------------------------------------------------------------------
-// TIER CAPS — tokens per billing cycle
-// This is the financial survival mechanism. NEVER modify without approval.
+// TIER CAPS — tokens per billing cycle (Retention-First Math)
+// -1 indicates unlimited (local $0 model).
+// NEVER modify without explicit architectural approval.
 // ---------------------------------------------------------------------------
 const tierCaps = {
-  learner: { flash: 3000000 },
-  starter: { flash: 5000000, pro: 1500000, glm: 1000000 },
-  pro:     { flash: 12000000, pro: 4000000, glm: 3000000 }
+  free: {
+    'muse-glimmer': -1
+  },
+  learner: {
+    'deepseek-v4-flash': 2000000
+  },
+  starter: {
+    'deepseek-v4-flash': 8000000,
+    'qwen3.6-35b-a3b': 1500000,
+    'deepseek-v4-pro': 500000,
+    'glm-5.2': 150000
+  },
+  pro: {
+    'deepseek-v4-flash': 12000000,
+    'qwen3.6-35b-a3b': 3000000,
+    'deepseek-v4-pro': 1000000,
+    'glm-5.2': 250000
+  }
 };
+
+const PREMIUM_TOGGLE_MODELS = new Set(['deepseek-v4-pro', 'glm-5.2']);
 
 // ---------------------------------------------------------------------------
 // EXPRESS APP
@@ -62,13 +80,19 @@ const app = express();
 app.use(helmet());
 app.use(cors({
   origin: ALLOWED_ORIGINS,
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Albion-Force-Model'
+  ],
   exposedHeaders: [
     'X-Albion-Usage-Percent',
     'X-Albion-Active-Model',
     'X-Albion-Tier',
     'X-Albion-Usage-Warning',
     'X-Albion-Current-Tokens',
-    'X-Albion-Cap-Tokens'
+    'X-Albion-Cap-Tokens',
+    'X-Albion-Caps-Summary'
   ]
 }));
 
@@ -111,12 +135,14 @@ async function authenticate(req, res, next) {
 }
 
 // ---------------------------------------------------------------------------
-// CAP CHECK: checkCapBeforeRoute
-// Queries Supabase for the user's subscription tier and current-cycle usage.
-// Calculates usage percentage, 80% soft warning, and 100% hard ceiling auto-downgrade.
-// CRITICAL: This MUST run BEFORE any request reaches a provider.
+// CAP CHECK & INTELLIGENT ROUTER: checkCapBeforeRoute
+// Enforces 4 routing rules in exact priority order:
+//   a. Free tier -> always muse-glimmer. Never a paid model.
+//   b. Paid tier with remaining caps -> intelligent router (flash/qwen auto; pro/glm ONLY via toggle)
+//   c. Paid tier, ALL paid caps exhausted -> force muse-glimmer + all_caps_exhausted warning
+//   d. Hard guard against paid model leaks
 // ---------------------------------------------------------------------------
-async function checkCapBeforeRoute(userId, estimatedTokens = 1000) {
+async function checkCapBeforeRoute(userId, { forceModel = null, hasImages = false, estimatedTokens = 1000 } = {}) {
   // 1. Get user's active subscription
   const { data: subscription, error: subError } = await supabase
     .from('subscriptions')
@@ -125,58 +151,172 @@ async function checkCapBeforeRoute(userId, estimatedTokens = 1000) {
     .eq('status', 'active')
     .single();
 
-  const tier = (subscription && subscription.tier && tierCaps[subscription.tier])
-    ? subscription.tier
-    : 'learner';
+  let tier = 'free';
+  if (!subError && subscription && subscription.tier && tierCaps[subscription.tier]) {
+    tier = subscription.tier;
+  }
   const cycleStart = subscription ? subscription.cycle_start : new Date(0).toISOString();
 
-  // 2. Get current cycle usage via RPC
-  let currentUsage = 0;
-  try {
-    const { data: usageData, error: usageError } = await supabase
-      .rpc('get_current_cycle_usage', {
-        p_user_id: userId,
-        p_cycle_start: cycleStart
-      });
-    if (!usageError && typeof usageData === 'number') {
-      currentUsage = usageData;
-    }
-  } catch (err) {
-    console.warn(`[CAP] Usage RPC error for user ${userId}:`, err.message);
+  // Rule a: Free tier ALWAYS routes to muse-glimmer. Never a paid model.
+  if (tier === 'free') {
+    return {
+      tier: 'free',
+      targetModel: 'muse-glimmer',
+      isFreeTier: true,
+      allCapsExhausted: false,
+      warning: null,
+      usagePercent: 0,
+      currentUsage: 0,
+      tierCap: -1,
+      maxUtilization: 0,
+      capsSummary: { 'muse-glimmer': { used: 0, cap: -1, percent: 0 } }
+    };
   }
 
-  const caps = tierCaps[tier] || tierCaps.learner;
-  const primaryCap = caps.flash;
-  const usagePercent = Number(((currentUsage / primaryCap) * 100).toFixed(1));
-  const projectedUsage = currentUsage + estimatedTokens;
+  // 2. Fetch usage grouped by model for current cycle
+  const currentTierCaps = tierCaps[tier] || tierCaps.learner;
+  const modelUsage = {};
+
+  try {
+    const { data: logs, error: logsError } = await supabase
+      .from('usage_logs')
+      .select('model, prompt_tokens, completion_tokens')
+      .eq('user_id', userId)
+      .gte('timestamp', cycleStart);
+
+    if (!logsError && Array.isArray(logs)) {
+      for (const log of logs) {
+        const m = log.model;
+        const total = (log.prompt_tokens || 0) + (log.completion_tokens || 0);
+        modelUsage[m] = (modelUsage[m] || 0) + total;
+      }
+    }
+  } catch (err) {
+    console.warn(`[CAP] Error fetching per-model usage for user ${userId}:`, err.message);
+  }
+
+  // Calculate caps summary and check exhaustion
+  const capsSummary = {};
+  let anyPaidRemaining = false;
+  let maxUtilization = 0;
+  let flashUsed = 0;
+  let flashCap = currentTierCaps['deepseek-v4-flash'] || 1;
+
+  for (const [m, cap] of Object.entries(currentTierCaps)) {
+    if (cap === -1) continue; // Skip unlimited local models
+    const used = modelUsage[m] || 0;
+    const ratio = used / cap;
+    if (ratio > maxUtilization) maxUtilization = ratio;
+    capsSummary[m] = { used, cap, percent: Number((ratio * 100).toFixed(1)) };
+
+    if (m === 'deepseek-v4-flash') {
+      flashUsed = used;
+      flashCap = cap;
+    }
+
+    if (used + estimatedTokens <= cap) {
+      anyPaidRemaining = true;
+    }
+  }
+
+  const allCapsExhausted = !anyPaidRemaining;
+  const overallPercent = Number(((flashUsed / flashCap) * 100).toFixed(1));
+
+  // Rule c: Paid tier, ALL paid caps exhausted -> force muse-glimmer
+  if (allCapsExhausted) {
+    console.warn(`[CAP] User ${userId} (${tier}) exhausted all paid caps. Forcing muse-glimmer.`);
+    return {
+      tier,
+      targetModel: 'muse-glimmer',
+      isFreeTier: false,
+      allCapsExhausted: true,
+      warning: 'all_caps_exhausted',
+      usagePercent: 100,
+      currentUsage: flashUsed,
+      tierCap: flashCap,
+      maxUtilization,
+      capsSummary
+    };
+  }
+
+  // Rule b: Paid tier with remaining caps
+  let selectedModel = null;
+
+  // Premium Toggle routing:
+  // If client sends X-Albion-Force-Model (deepseek-v4-pro or glm-5.2) AND cap remains
+  if (forceModel && PREMIUM_TOGGLE_MODELS.has(forceModel)) {
+    const proCap = currentTierCaps[forceModel];
+    const proUsed = modelUsage[forceModel] || 0;
+    if (proCap && (proUsed + estimatedTokens <= proCap)) {
+      selectedModel = forceModel;
+    } else {
+      console.warn(`[CAP] Forced model ${forceModel} cap exhausted (${proUsed}/${proCap}). Falling back to routine router.`);
+    }
+  }
+
+  // Intelligent Router for ~95% of tasks:
+  // STRICT RULE 3: Proxy is STRICTLY FORBIDDEN from auto-routing to Pro or GLM.
+  if (!selectedModel) {
+    if (hasImages && currentTierCaps['qwen3.6-35b-a3b']) {
+      const qwenCap = currentTierCaps['qwen3.6-35b-a3b'];
+      const qwenUsed = modelUsage['qwen3.6-35b-a3b'] || 0;
+      if (qwenUsed + estimatedTokens <= qwenCap) {
+        selectedModel = 'qwen3.6-35b-a3b';
+      }
+    }
+
+    // Default to flash for routine text/code edits
+    if (!selectedModel) {
+      if (currentTierCaps['deepseek-v4-flash'] && (flashUsed + estimatedTokens <= flashCap)) {
+        selectedModel = 'deepseek-v4-flash';
+      } else {
+        // Find any available non-premium paid model
+        for (const [m, cap] of Object.entries(currentTierCaps)) {
+          if (!PREMIUM_TOGGLE_MODELS.has(m) && ((modelUsage[m] || 0) + estimatedTokens <= cap)) {
+            selectedModel = m;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback if no routine cloud model has quota:
+  if (!selectedModel) {
+    selectedModel = 'muse-glimmer';
+  }
+
+  // Rule d: Hard guard against paid model leakage
+  if (selectedModel !== 'muse-glimmer' && allCapsExhausted) {
+    selectedModel = 'muse-glimmer';
+    console.error('[CAP] Paid model blocked at exhausted caps.');
+  }
 
   let warning = null;
-  let forceFlash = false;
-
-  // 100% Threshold: Auto-downgrade to flash, warning: hard_ceiling_reached
-  if (usagePercent >= 100 || projectedUsage > primaryCap) {
+  if (maxUtilization >= 1.0) {
     warning = 'hard_ceiling_reached';
-    forceFlash = true;
-  } else if (usagePercent >= 80) {
-    // 80% Threshold: Warning: approaching_limit
+  } else if (maxUtilization >= 0.85) {
     warning = 'approaching_limit';
-    forceFlash = false;
   }
 
   return {
     tier,
-    currentUsage,
-    tierCap: primaryCap,
-    usagePercent,
+    targetModel: selectedModel,
+    isFreeTier: false,
+    allCapsExhausted,
     warning,
-    forceFlash
+    usagePercent: overallPercent,
+    currentUsage: flashUsed,
+    tierCap: flashCap,
+    maxUtilization,
+    capsSummary
   };
 }
 
 // ---------------------------------------------------------------------------
 // ROUTE: POST /chat
 // Accepts: { messages, model_preference, estimated_tokens, session_id }
-// Flow: Auth → Cap Check → Route to LiteLLM → Log Usage → Respond
+// Flow: Auth → Cap & Routing Check → Route to LiteLLM → Log Usage → Respond
 // ---------------------------------------------------------------------------
 app.post('/chat', authenticate, async (req, res) => {
   const userId = req.user.id;
@@ -187,10 +327,27 @@ app.post('/chat', authenticate, async (req, res) => {
     return res.status(400).json({ error: 'messages array is required and must not be empty' });
   }
 
+  // Extract Premium Toggle header
+  const forceModelHeader = req.headers['x-albion-force-model'] || null;
+
+  // Detect image context in conversation
+  const hasImages = messages.some(m => {
+    if (Array.isArray(m.content)) {
+      return m.content.some(c => c.type === 'image_url' || c.image_url);
+    }
+    return false;
+  });
+
   try {
-    // STEP 1: Pre-request cap check — BEFORE any provider call
+    // STEP 1: Pre-request cap & routing check — BEFORE any provider call
     const estimatedTokenCount = estimated_tokens || 1000;
-    const capResult = await checkCapBeforeRoute(userId, estimatedTokenCount);
+    const capResult = await checkCapBeforeRoute(userId, {
+      forceModel: forceModelHeader,
+      hasImages,
+      estimatedTokens: estimatedTokenCount
+    });
+
+    const targetModel = capResult.targetModel;
 
     // STEP 2: Fetch project_memory from Supabase (never trust client-supplied memory)
     // Enforces Master Build Plan Rule 5: Strict Context Ordering for prefix caching.
@@ -231,20 +388,13 @@ app.post('/chat', authenticate, async (req, res) => {
       });
     }
 
-    // STEP 4: Determine target model (Strict Soft/Hard Ceiling enforcement)
-    let targetModel;
-    if (capResult.forceFlash) {
-      targetModel = 'deepseek-v4-flash';
-    } else {
-      targetModel = model_preference || 'deepseek-v4-flash';
-    }
-
     // Set custom transparency & fuel gauge response headers
     res.setHeader('X-Albion-Usage-Percent', capResult.usagePercent.toString());
     res.setHeader('X-Albion-Active-Model', targetModel);
     res.setHeader('X-Albion-Tier', capResult.tier);
     res.setHeader('X-Albion-Current-Tokens', capResult.currentUsage.toString());
     res.setHeader('X-Albion-Cap-Tokens', capResult.tierCap.toString());
+    res.setHeader('X-Albion-Caps-Summary', JSON.stringify(capResult.capsSummary || {}));
 
     if (capResult.warning) {
       res.setHeader('X-Albion-Usage-Warning', capResult.warning);
@@ -274,38 +424,99 @@ app.post('/chat', authenticate, async (req, res) => {
     // STEP 6: Parse response — throw on provider failure
     if (!providerResponse.ok) {
       const errorText = await providerResponse.text().catch(() => 'Unknown provider error');
-      console.error(`[CHAT] Provider returned ${providerResponse.status} for user ${userId}: ${errorText}`);
+      console.error(`[CHAT] Provider returned ${providerResponse.status} for model ${targetModel} (user ${userId}): ${errorText}`);
+
+      // Rule 2d: Local muse-glimmer unreachable (Ollama down) -> 503
+      // NEVER silently fall back to a paid model.
+      if (targetModel === 'muse-glimmer') {
+        return res.status(503).json({
+          error: 'Local free model offline. Start Ollama or top up to unlock cloud models.'
+        });
+      }
+
       throw new Error(`Provider returned HTTP ${providerResponse.status}`);
     }
 
     const data = await providerResponse.json();
 
-    // STEP 7: Synchronously log usage BEFORE responding to client
-    const { error: logError } = await supabase.from('usage_logs').insert({
-      user_id: userId,
-      model: targetModel,
-      prompt_tokens: data.usage?.prompt_tokens || 0,
-      completion_tokens: data.usage?.completion_tokens || 0,
-      actual_cost: data.metadata?.cost || 0,
-      session_id: session_id || null,
-      timestamp: new Date().toISOString()
-    });
+    // STEP 7: Synchronously log usage BEFORE responding to client (paid models only)
+    if (targetModel !== 'muse-glimmer') {
+      const { error: logError } = await supabase.from('usage_logs').insert({
+        user_id: userId,
+        model: targetModel,
+        prompt_tokens: data.usage?.prompt_tokens || 0,
+        completion_tokens: data.usage?.completion_tokens || 0,
+        actual_cost: data.metadata?.cost || 0,
+        session_id: session_id || null,
+        timestamp: new Date().toISOString()
+      });
 
-    if (logError) {
-      // Log the error but don't fail the request — usage is already consumed
-      console.error(`[USAGE] Failed to log usage for user ${userId}:`, logError.message);
+      if (logError) {
+        // Log the error but don't fail the request — usage is already consumed
+        console.error(`[USAGE] Failed to log usage for user ${userId}:`, logError.message);
+      }
     }
 
     // STEP 8: Return provider response to Cline
     return res.json(data);
 
   } catch (err) {
-    // Catch-all: log with user ID, return safe 502
     console.error(`[CHAT] Error for user ${userId}:`, err.message);
+
+    // Rule 2d: If muse-glimmer was target and failed (e.g. connection refused to Ollama)
+    if (typeof targetModel !== 'undefined' && targetModel === 'muse-glimmer') {
+      return res.status(503).json({
+        error: 'Local free model offline. Start Ollama or top up to unlock cloud models.'
+      });
+    }
+
     return res.status(502).json({
       error: 'Provider unavailable. Retrying...',
       retry_after: 2000
     });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ROUTE: POST /billing/topup-check
+// Top-Up Restriction (Requirement 4):
+// A user may initiate a top-up/re-subscription ONLY if MAX(model_usage / model_cap) >= 0.85
+// for any model in their tier. Otherwise returns 403.
+// ---------------------------------------------------------------------------
+app.post('/billing/topup-check', authenticate, async (req, res) => {
+  const userId = req.user.id;
+
+  try {
+    const capStatus = await checkCapBeforeRoute(userId);
+
+    if (capStatus.tier === 'free') {
+      return res.json({
+        eligible: true,
+        tier: 'free',
+        message: 'Free tier user eligible to upgrade to any paid tier.'
+      });
+    }
+
+    const maxUtil = capStatus.maxUtilization || 0;
+    const maxPercent = Number((maxUtil * 100).toFixed(1));
+
+    if (maxUtil < 0.85) {
+      return res.status(403).json({
+        error: 'Top-up available when a model cap reaches 85% utilization',
+        current_max_utilization: maxPercent,
+        tier: capStatus.tier
+      });
+    }
+
+    return res.json({
+      eligible: true,
+      current_max_utilization: maxPercent,
+      tier: capStatus.tier,
+      capsSummary: capStatus.capsSummary
+    });
+  } catch (err) {
+    console.error(`[TOPUP-CHECK] Error for user ${userId}:`, err.message);
+    return res.status(500).json({ error: 'Failed to verify top-up eligibility' });
   }
 });
 

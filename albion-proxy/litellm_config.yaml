@@ -52,6 +52,13 @@ model_list:
       api_key: os.environ/TOGETHER_API_KEY
       api_base: https://api.together.xyz/v1
 
+  # FREE / OFFLINE / EXHAUSTED CAPS FALLBACK: Local Muse Glimmer (via Ollama)
+  - model_name: muse-glimmer
+    litellm_params:
+      model: ollama/muse-glimmer
+      api_base: http://localhost:11434
+      tags: ["provider:local", "cost:free"]
+
 general_settings:
   master_key: sk-albion-proxy-key-CHANGE-ME-IN-PROD
   database_url: os.environ/DATABASE_URL
