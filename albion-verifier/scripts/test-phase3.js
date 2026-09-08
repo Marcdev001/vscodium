@@ -36,6 +36,10 @@ const {
   mergeContinuity
 } = require('../supabase-autosave');
 
+const {
+  queueDocumentIndex
+} = require('../albion-lifecycle');
+
 // ---------------------------------------------------------------------------
 // TEST HARNESS
 // ---------------------------------------------------------------------------
@@ -164,6 +168,38 @@ async function runTests() {
     assert(merged.sessionId === 'sess_12345', 'Preserves session ID');
     assert(merged.fileEdits[0].filePath === '/new/relocated/project/src/auth.js', 'Intelligently remaps file paths when project moves');
     assert(merged.modelUsed === 'deepseek-v4-flash', 'Preserves model preferences');
+
+    // -----------------------------------------------------------------------
+    // PART 5: DOCUMENT WATCHER DEBOUNCE (1.5s Idle Window)
+    // -----------------------------------------------------------------------
+    console.log(`\n${YELLOW}TEST 5:${RESET} Document Watcher Debounce (1.5s Idle Window)`);
+
+    let indexCallCount = 0;
+    const indexedFilesList = [];
+    const mockIndexer = async (userId, projectPath, files) => {
+      indexCallCount++;
+      indexedFilesList.push(...files);
+      return { indexedFiles: files.length, totalChunks: 1 };
+    };
+
+    const testFileA = path.join(tempProjectDir, 'src', 'debounced_edit.js');
+
+    // Simulate 5 rapid keystrokes spaced 100ms apart (total 400ms duration)
+    for (let i = 0; i < 5; i++) {
+      queueDocumentIndex(testFileA, tempProjectDir, 'user_123', mockIndexer, 1500);
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    // Mid-typing check: debounce window should NOT have fired yet
+    assert(indexCallCount === 0, 'Zero indexing calls fired during rapid keystrokes (typing active)');
+
+    // Wait for the 1.5s idle window to elapse (+250ms buffer)
+    console.log('  Waiting 1.75s for debounce timer to complete...');
+    await new Promise(r => setTimeout(r, 1750));
+
+    // Post-idle check: exactly ONE call should have fired
+    assert(indexCallCount === 1, `Exactly ONE indexing call fired after idle window (actual: ${indexCallCount})`);
+    assert(indexedFilesList.length === 1 && indexedFilesList[0] === testFileA, 'Correct file was dispatched to indexer');
 
   } finally {
     // Cleanup temporary directory

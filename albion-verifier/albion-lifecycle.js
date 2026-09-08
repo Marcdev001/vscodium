@@ -23,86 +23,140 @@
 const path = require('path');
 
 // ---------------------------------------------------------------------------
-// Resolve the autosave module from the bundled verifier path.
+// Resolve modules from the bundled verifier path.
 // ALBION_VERIFIER_PATH is set by the VSCodium launcher script.
 // ---------------------------------------------------------------------------
 const VERIFIER_PATH = process.env.ALBION_VERIFIER_PATH || path.join(__dirname);
-const { saveTurn, saveImmediately, flushAll, loadLastSession } = require(
-  path.join(VERIFIER_PATH, 'supabase-autosave.js')
-);
+const {
+  saveTurn,
+  saveImmediately,
+  flushAll,
+  restoreSessionSilently
+} = require(path.join(VERIFIER_PATH, 'supabase-autosave.js'));
+
+const { ensureMemoryFile } = require(path.join(VERIFIER_PATH, 'project-memory.js'));
+const { indexChangedFiles } = require(path.join(VERIFIER_PATH, 'repo-indexer.js'));
+
+// ---------------------------------------------------------------------------
+// DOCUMENT CHANGE DEBOUNCER
+// Debounces active keystrokes (1.5s idle window) so unsaved changes are
+// indexed without spamming the embedding endpoint on every keystroke.
+// ---------------------------------------------------------------------------
+const indexDebounceTimers = new Map();
+const INDEX_DEBOUNCE_MS = 1500;
+
+/**
+ * Queues an incremental index call for a changed file.
+ * Resets debounce timer if the same file is modified again within the idle window.
+ */
+function queueDocumentIndex(
+  filePath,
+  projectPath,
+  userId,
+  onIndexCallback = indexChangedFiles,
+  delayMs = INDEX_DEBOUNCE_MS
+) {
+  if (indexDebounceTimers.has(filePath)) {
+    clearTimeout(indexDebounceTimers.get(filePath));
+  }
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(async () => {
+      indexDebounceTimers.delete(filePath);
+      try {
+        const res = await onIndexCallback(userId, projectPath, [filePath]);
+        resolve({ indexed: true, result: res });
+      } catch (err) {
+        resolve({ indexed: false, error: err.message });
+      }
+    }, delayMs);
+
+    indexDebounceTimers.set(filePath, timer);
+  });
+}
+
+/**
+ * Wires VS Code's onDidChangeTextDocument event to the incremental repo indexer.
+ */
+function wireDocumentWatcher(context, vscode, userId) {
+  const workspaceFolders = vscode.workspace.workspaceFolders;
+  if (!workspaceFolders || workspaceFolders.length === 0) return;
+  const projectPath = workspaceFolders[0].uri.fsPath;
+
+  const disposable = vscode.workspace.onDidChangeTextDocument((event) => {
+    const document = event.document;
+
+    // Ignore non-file schemes (git diffs, outputs, debug consoles)
+    if (document.uri.scheme !== 'file') return;
+
+    const filePath = document.uri.fsPath;
+
+    // Ignore .albion, node_modules, and git files
+    if (
+      filePath.includes('node_modules') ||
+      filePath.includes('.git') ||
+      filePath.includes('.albion')
+    ) {
+      return;
+    }
+
+    queueDocumentIndex(filePath, projectPath, userId);
+  });
+
+  context.subscriptions.push(disposable);
+}
 
 // ---------------------------------------------------------------------------
 // activate(context, cline, vscode)
 //
-// Call this from the Cline extension's activate() function.
-// Attempts to restore the last session for this project and user.
-//
-// Parameters:
-//   context  - VSCode ExtensionContext
-//   cline    - Cline extension API object
-//   vscode   - The vscode module (passed in to avoid a direct require)
+// Called from Cline extension's activate() before webview / UI renders.
+// Performs silent session restore and wires real-time indexer.
 // ---------------------------------------------------------------------------
 async function activate(context, cline, vscode) {
   const userId = context.globalState.get('albion.userId');
   const workspaceFolders = vscode.workspace.workspaceFolders;
   const projectPath = workspaceFolders?.[0]?.uri?.fsPath;
 
-  if (!userId || !projectPath) {
-    // No user logged in or no workspace open — skip restore
-    return;
+  if (!userId || !projectPath) return;
+
+  // 1. Ensure .albion/memory.md exists
+  try {
+    ensureMemoryFile(projectPath);
+  } catch (err) {
+    console.warn('[ALBION-LIFECYCLE] Failed to verify .albion/memory.md:', err.message);
   }
 
+  // 2. Silent Session Restore (ZERO modal, ZERO dialog, ZERO flicker)
   try {
-    const lastSession = await loadLastSession(userId, projectPath);
-
-    if (!lastSession) {
-      return; // No previous session found — fresh start
-    }
-
-    const updatedAt = new Date(lastSession.updatedAt).toLocaleString();
-    const choice = await vscode.window.showInformationMessage(
-      `Albion: Restore your last session from ${updatedAt}?`,
-      { modal: false },
-      'Restore',
-      'Start Fresh'
-    );
-
-    if (choice === 'Restore') {
-      cline.restoreConversation(lastSession.messages);
-      if (lastSession.fileEdits && lastSession.fileEdits.length > 0) {
-        cline.restoreFileEdits(lastSession.fileEdits);
-      }
+    const result = await restoreSessionSilently(userId, projectPath, cline);
+    if (result.restored) {
+      vscode.window.setStatusBarMessage(
+        `$(check) Albion: Restored session (${result.messageCount} messages)`,
+        4000
+      );
     }
   } catch (err) {
-    // Non-fatal: log and continue. Never block editor startup.
-    console.error('[albion-lifecycle] Session restore failed:', err.message);
+    console.error('[ALBION-LIFECYCLE] Silent restore failed:', err.message);
   }
+
+  // 3. Wire real-time document watcher for incremental indexing
+  wireDocumentWatcher(context, vscode, userId);
 }
 
 // ---------------------------------------------------------------------------
-// onResponse(sessionId, userId, cline, response)
+// onResponse(sessionId, userId, projectPath, cline, response)
 //
-// Call this inside Cline's onDidReceiveResponse event handler.
+// Called inside Cline's onDidReceiveResponse event handler.
 // Triggers the debounced (2s) Supabase upsert for the current conversation state.
-//
-// Parameters:
-//   sessionId   - unique ID for this conversation session
-//   userId      - Albion user ID from auth context
-//   projectPath - absolute path to the open workspace
-//   cline       - Cline extension API object
-//   response    - the AI response object from the LLM
 // ---------------------------------------------------------------------------
 function onResponse(sessionId, userId, projectPath, cline, response) {
-  // Non-blocking debounced save — returns a Promise but we don't await it here.
-  // Errors are swallowed after logging; the user's workflow must never be interrupted
-  // by an autosave failure.
   saveTurn(sessionId, userId, {
     projectPath,
-    messages:     cline.getConversationHistory?.() || [],
-    fileEdits:    cline.getPendingEdits?.()        || [],
-    currentStep:  'awaiting_user_input',
-    modelUsed:    response?.model                  || 'unknown',
-    tokenCount:   response?.usage?.total_tokens    || 0
+    messages: cline.getConversationHistory?.() || [],
+    fileEdits: cline.getPendingEdits?.() || [],
+    currentStep: 'awaiting_user_input',
+    modelUsed: response?.model || 'unknown',
+    tokenCount: response?.usage?.total_tokens || 0
   }).catch((err) => {
     console.error('[albion-lifecycle] Autosave failed:', err.message);
   });
@@ -110,33 +164,36 @@ function onResponse(sessionId, userId, projectPath, cline, response) {
 
 // ---------------------------------------------------------------------------
 // deactivate(sessionId, userId, projectPath, cline)
-//
-// Call this from the Cline extension's deactivate() function.
-// Flushes all pending debounced saves and performs an immediate final save.
-//
-// Parameters:
-//   sessionId   - unique ID for this conversation session
-//   userId      - Albion user ID from auth context
-//   projectPath - absolute path to the open workspace
-//   cline       - Cline extension API object
 // ---------------------------------------------------------------------------
 async function deactivate(sessionId, userId, projectPath, cline) {
-  // Cancel all pending debounce timers — we're about to do an immediate save
   flushAll();
+
+  // Cancel any pending index debounces
+  for (const [, timer] of indexDebounceTimers.entries()) {
+    clearTimeout(timer);
+  }
+  indexDebounceTimers.clear();
 
   try {
     await saveImmediately(sessionId, userId, {
       projectPath,
-      messages:    cline.getConversationHistory?.() || [],
-      fileEdits:   cline.getPendingEdits?.()        || [],
+      messages: cline.getConversationHistory?.() || [],
+      fileEdits: cline.getPendingEdits?.() || [],
       currentStep: 'session_closed',
-      modelUsed:   null,
-      tokenCount:  0
+      modelUsed: null,
+      tokenCount: 0
     });
   } catch (err) {
-    // On deactivate, we cannot show UI. Log and exit cleanly.
     console.error('[albion-lifecycle] Final save on deactivate failed:', err.message);
   }
 }
 
-module.exports = { activate, onResponse, deactivate };
+module.exports = {
+  activate,
+  onResponse,
+  deactivate,
+  queueDocumentIndex,
+  wireDocumentWatcher,
+  INDEX_DEBOUNCE_MS
+};
+
