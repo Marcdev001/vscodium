@@ -95,3 +95,42 @@ BEGIN
   LIMIT p_match_count;
 END;
 $$;
+
+-- 8. Create the project_memory table
+CREATE TABLE IF NOT EXISTS public.project_memory (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  project_path TEXT NOT NULL,
+  memory_content TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, project_path)
+);
+
+-- Index for fast user + project lookups
+CREATE INDEX IF NOT EXISTS idx_project_memory_lookup
+  ON public.project_memory (user_id, project_path);
+
+-- RLS Policies for project_memory
+ALTER TABLE public.project_memory ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view own project_memory" ON public.project_memory;
+CREATE POLICY "Users can view own project_memory" 
+  ON public.project_memory FOR SELECT 
+  USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can insert own project_memory" ON public.project_memory;
+CREATE POLICY "Users can insert own project_memory" 
+  ON public.project_memory FOR INSERT 
+  WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can update own project_memory" ON public.project_memory;
+CREATE POLICY "Users can update own project_memory" 
+  ON public.project_memory FOR UPDATE 
+  USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can delete own project_memory" ON public.project_memory;
+CREATE POLICY "Users can delete own project_memory" 
+  ON public.project_memory FOR DELETE 
+  USING (auth.uid() = user_id);
+

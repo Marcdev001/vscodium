@@ -154,7 +154,7 @@ async function checkCapBeforeRoute(userId, estimatedTokens) {
 // ---------------------------------------------------------------------------
 app.post('/chat', authenticate, async (req, res) => {
   const userId = req.user.id;
-  const { messages, model_preference, estimated_tokens, session_id } = req.body;
+  const { messages, model_preference, estimated_tokens, session_id, project_path } = req.body;
 
   // Input validation
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
@@ -166,7 +166,46 @@ app.post('/chat', authenticate, async (req, res) => {
     const estimatedTokenCount = estimated_tokens || 1000;
     const capResult = await checkCapBeforeRoute(userId, estimatedTokenCount);
 
-    // STEP 2: Determine target model
+    // STEP 2: Fetch project_memory from Supabase (never trust client-supplied memory)
+    // Enforces Master Build Plan Rule 5: Strict Context Ordering for prefix caching.
+    let memoryBlock = '<project_memory></project_memory>';
+
+    if (project_path && typeof project_path === 'string') {
+      try {
+        const { data: memData, error: memError } = await supabase
+          .from('project_memory')
+          .select('memory_content')
+          .eq('user_id', userId)
+          .eq('project_path', project_path)
+          .single();
+
+        if (!memError && memData && memData.memory_content) {
+          const content = memData.memory_content.trim();
+          memoryBlock = `<project_memory>\n${content}\n</project_memory>`;
+        }
+      } catch (memErr) {
+        console.warn(`[CHAT] Failed to query project_memory for user ${userId}:`, memErr.message);
+      }
+    }
+
+    // STEP 3: Inject memory context into ordered messages
+    // [System Prompt] -> [<project_memory>] -> [History / User Message]
+    let orderedMessages = [...messages];
+    const hasSystemPrompt = orderedMessages.length > 0 && orderedMessages[0].role === 'system';
+
+    if (hasSystemPrompt) {
+      orderedMessages[0] = {
+        role: 'system',
+        content: `${orderedMessages[0].content}\n\n${memoryBlock}`
+      };
+    } else {
+      orderedMessages.unshift({
+        role: 'system',
+        content: memoryBlock
+      });
+    }
+
+    // STEP 4: Determine target model
     let targetModel;
     if (capResult === 'flash_only') {
       targetModel = 'deepseek-v4-flash';
@@ -174,7 +213,7 @@ app.post('/chat', authenticate, async (req, res) => {
       targetModel = model_preference || 'deepseek-v4-flash';
     }
 
-    // STEP 3: Route via direct HTTP POST to LiteLLM (OpenAI-compatible)
+    // STEP 5: Route via direct HTTP POST to LiteLLM (OpenAI-compatible)
     const providerResponse = await fetch(`${LITELLM_BASE_URL}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -183,12 +222,13 @@ app.post('/chat', authenticate, async (req, res) => {
       },
       body: JSON.stringify({
         model: targetModel,
-        messages: messages,
+        messages: orderedMessages,
         timeout: 30000,
         metadata: {
           user_id: userId,
           tier: capResult,
-          session_id: session_id || null
+          session_id: session_id || null,
+          project_path: project_path || null
         }
       })
     });
