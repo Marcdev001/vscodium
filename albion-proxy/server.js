@@ -18,7 +18,79 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
+const Sentry = require('@sentry/node');
+const { rateLimit, MemoryStore } = require('express-rate-limit');
 require('dotenv').config();
+
+// ---------------------------------------------------------------------------
+// SENTRY ERROR TRACKING (Production Hardening)
+// ---------------------------------------------------------------------------
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || 'development',
+    tracesSampleRate: 1.0
+  });
+  console.log('[SENTRY] Initialized error tracking.');
+}
+
+// ---------------------------------------------------------------------------
+// RATE LIMIT STORE CONFIGURATION
+// Supports MemoryStore for local development and RedisStore for production.
+// ---------------------------------------------------------------------------
+function getRateLimitStore() {
+  if (process.env.RATE_LIMIT_STORE === 'redis') {
+    try {
+      const RedisStore = require('rate-limit-redis').default || require('rate-limit-redis');
+      return new RedisStore();
+    } catch (e) {
+      console.warn('[RATE-LIMIT] Redis store requested but rate-limit-redis not available, falling back to MemoryStore');
+      return new MemoryStore();
+    }
+  }
+  return new MemoryStore();
+}
+
+// Global rate limit: 30 requests per minute per IP / UserID
+const globalRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 30,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  validate: { keyGeneratorIpFallback: false },
+  keyGenerator: (req) => {
+    return req.user?.id || req.ip || req.headers['x-forwarded-for'] || 'anonymous';
+  },
+  handler: (req, res) => {
+    res.setHeader('Retry-After', '60');
+    return res.status(429).json({
+      error: 'Too Many Requests',
+      message: 'Rate limit exceeded: maximum 30 requests per minute. Please wait before retrying.',
+      retry_after: 60
+    });
+  },
+  store: getRateLimitStore()
+});
+
+// Stricter rate limit on /webhooks/paystack: 5 requests per minute
+const webhookRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 5,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  validate: { keyGeneratorIpFallback: false },
+  keyGenerator: (req) => req.ip || 'paystack-webhook',
+  handler: (req, res) => {
+    res.setHeader('Retry-After', '60');
+    return res.status(429).json({
+      error: 'Too Many Requests',
+      message: 'Webhook rate limit exceeded: maximum 5 requests per minute.',
+      retry_after: 60
+    });
+  },
+  store: getRateLimitStore()
+});
+
 
 // ---------------------------------------------------------------------------
 // ENV VALIDATION
@@ -318,7 +390,7 @@ async function checkCapBeforeRoute(userId, { forceModel = null, hasImages = fals
 // Accepts: { messages, model_preference, estimated_tokens, session_id }
 // Flow: Auth → Cap & Routing Check → Route to LiteLLM → Log Usage → Respond
 // ---------------------------------------------------------------------------
-app.post('/chat', authenticate, async (req, res) => {
+app.post('/chat', authenticate, globalRateLimiter, async (req, res) => {
   const userId = req.user.id;
   const { messages, model_preference, estimated_tokens, session_id, project_path } = req.body;
 
@@ -349,7 +421,7 @@ app.post('/chat', authenticate, async (req, res) => {
 
     const targetModel = capResult.targetModel;
 
-    // STEP 2: Fetch project_memory from Supabase (never trust client-supplied memory)
+    // STEP 2: Fetch project_memory directly from Supabase (Zero Trust Client Body)
     // Enforces Master Build Plan Rule 5: Strict Context Ordering for prefix caching.
     let memoryBlock = '<project_memory></project_memory>';
 
@@ -461,6 +533,13 @@ app.post('/chat', authenticate, async (req, res) => {
     return res.json(data);
 
   } catch (err) {
+    if (process.env.SENTRY_DSN) {
+      Sentry.captureException(err, {
+        user: { id: userId },
+        extra: { project_path }
+      });
+    }
+
     console.error(`[CHAT] Error for user ${userId}:`, err.message);
 
     // Rule 2d: If muse-glimmer was target and failed (e.g. connection refused to Ollama)
@@ -525,7 +604,7 @@ app.post('/billing/topup-check', authenticate, async (req, res) => {
 // Paystack webhook listener with HMAC SHA512 signature verification
 // Handles: charge.success, subscription.create, subscription.disable
 // ---------------------------------------------------------------------------
-app.post('/webhooks/paystack', async (req, res) => {
+app.post('/webhooks/paystack', webhookRateLimiter, async (req, res) => {
   const signature = req.headers['x-paystack-signature'];
 
   if (!signature || !PAYSTACK_SECRET_KEY) {

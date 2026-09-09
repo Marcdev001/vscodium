@@ -36,6 +36,13 @@ const {
 
 const { ensureMemoryFile } = require(path.join(VERIFIER_PATH, 'project-memory.js'));
 const { indexChangedFiles } = require(path.join(VERIFIER_PATH, 'repo-indexer.js'));
+const {
+  initStatusBar,
+  getForcedModel,
+  getCurrentRoutingMode,
+  cycleRoutingMode,
+  getRoutingHeaders
+} = require(path.join(VERIFIER_PATH, 'albion-status-bar.js'));
 
 // ---------------------------------------------------------------------------
 // DOCUMENT CHANGE DEBOUNCER
@@ -141,6 +148,25 @@ async function activate(context, cline, vscode) {
 
   // 3. Wire real-time document watcher for incremental indexing
   wireDocumentWatcher(context, vscode, userId);
+
+  // 4. Initialize Fuel Gauge status bar and commands
+  try {
+    initStatusBar(context, vscode);
+  } catch (err) {
+    console.warn('[ALBION-LIFECYCLE] Failed to initialize status bar:', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// injectProxyHeaders(headers)
+// Injects X-Albion-Force-Model into proxy requests if Premium Toggle is active
+// ---------------------------------------------------------------------------
+function injectProxyHeaders(headers = {}) {
+  const routingHeaders = getRoutingHeaders();
+  return {
+    ...headers,
+    ...routingHeaders
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +220,11 @@ module.exports = {
   deactivate,
   queueDocumentIndex,
   wireDocumentWatcher,
+  injectProxyHeaders,
+  getRoutingHeaders,
+  getForcedModel,
+  getCurrentRoutingMode,
+  cycleRoutingMode,
   INDEX_DEBOUNCE_MS
 };
 

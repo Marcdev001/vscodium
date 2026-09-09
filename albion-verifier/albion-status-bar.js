@@ -31,6 +31,75 @@ let currentBillingState = {
   lastUpdated: null
 };
 
+// ---------------------------------------------------------------------------
+// ROUTING MODES (Premium Toggle UX)
+// Cycle: AUTO (Flash/Qwen) -> FORCE PRO -> FORCE GLM -> AUTO
+// ---------------------------------------------------------------------------
+const ROUTING_MODES = [
+  { mode: 'AUTO', label: 'AUTO (Flash/Qwen)', forceModel: null },
+  { mode: 'FORCE PRO', label: 'FORCE PRO', forceModel: 'deepseek-v4-pro' },
+  { mode: 'FORCE GLM', label: 'FORCE GLM', forceModel: 'glm-5.2' }
+];
+
+let currentRoutingIndex = 0;
+
+function getCurrentRoutingMode() {
+  return ROUTING_MODES[currentRoutingIndex];
+}
+
+function getForcedModel() {
+  return ROUTING_MODES[currentRoutingIndex].forceModel;
+}
+
+function getRoutingHeaders() {
+  const model = getForcedModel();
+  if (model) {
+    return { 'X-Albion-Force-Model': model };
+  }
+  return {};
+}
+
+function cycleRoutingMode(vscode) {
+  currentRoutingIndex = (currentRoutingIndex + 1) % ROUTING_MODES.length;
+  const newMode = ROUTING_MODES[currentRoutingIndex];
+
+  currentBillingState.isPremiumToggle = newMode.forceModel !== null;
+  if (newMode.forceModel) {
+    currentBillingState.activeModel = newMode.forceModel;
+  } else {
+    currentBillingState.activeModel = 'deepseek-v4-flash';
+  }
+
+  if (vscode) {
+    renderStatusBar(vscode);
+    if (vscode.window && typeof vscode.window.setStatusBarMessage === 'function') {
+      vscode.window.setStatusBarMessage(
+        `$(zap) Albion Routing: ${newMode.label}`,
+        3000
+      );
+    }
+  }
+
+  return newMode;
+}
+
+function setRoutingMode(modeName, vscode) {
+  const idx = ROUTING_MODES.findIndex(m => m.mode === modeName || m.label === modeName);
+  if (idx !== -1) {
+    currentRoutingIndex = idx;
+    const newMode = ROUTING_MODES[currentRoutingIndex];
+    currentBillingState.isPremiumToggle = newMode.forceModel !== null;
+    if (newMode.forceModel) {
+      currentBillingState.activeModel = newMode.forceModel;
+    }
+    if (vscode) {
+      renderStatusBar(vscode);
+    }
+    return newMode;
+  }
+  return ROUTING_MODES[currentRoutingIndex];
+}
+
 /**
  * Formats large token numbers into compact human-readable strings (e.g. 45k, 1.2M, 8M).
  * @param {number} num
@@ -97,9 +166,33 @@ function initStatusBar(context, vscode) {
     vscode.env.openExternal(vscode.Uri.parse('https://albion.dev/account'));
   });
 
+  // Register command for cycling routing mode (AUTO -> FORCE PRO -> FORCE GLM -> AUTO)
+  const cycleCmd = vscode.commands.registerCommand('albion.cycleRoutingMode', () => {
+    cycleRoutingMode(vscode);
+  });
+
+  // Register command to link out to website terms
+  const termsCmd = vscode.commands.registerCommand('albion.openTerms', () => {
+    vscode.env.openExternal(vscode.Uri.parse('https://albion.dev/terms'));
+  });
+
+  // Register command to link out to privacy policy
+  const privacyCmd = vscode.commands.registerCommand('albion.openPrivacy', () => {
+    vscode.env.openExternal(vscode.Uri.parse('https://albion.dev/privacy'));
+  });
+
+  // Register command to report a bug
+  const reportBugCmd = vscode.commands.registerCommand('albion.reportBug', () => {
+    vscode.env.openExternal(vscode.Uri.parse('https://github.com/Marcdev001/albion/issues'));
+  });
+
   context.subscriptions.push(statusBarItem);
   context.subscriptions.push(detailsCmd);
   context.subscriptions.push(accountCmd);
+  context.subscriptions.push(cycleCmd);
+  context.subscriptions.push(termsCmd);
+  context.subscriptions.push(privacyCmd);
+  context.subscriptions.push(reportBugCmd);
 
   return statusBarItem;
 }
@@ -305,6 +398,12 @@ module.exports = {
   formatTokens,
   getModelShortLabel,
   formatTierName,
+  ROUTING_MODES,
+  cycleRoutingMode,
+  getCurrentRoutingMode,
+  getForcedModel,
+  getRoutingHeaders,
+  setRoutingMode,
   getCurrentBillingState: () => ({ ...currentBillingState }),
   _setBillingState: (state) => { currentBillingState = { ...currentBillingState, ...state }; }
 };

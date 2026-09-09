@@ -1,4 +1,9 @@
 {
+  "nameShort": "Albion",
+  "nameLong": "Albion - The AI Code Editor for Africa",
+  "applicationName": "albion",
+  "win32AppUserModelId": "Albion.Editor",
+  "darwinBundleIdentifier": "com.albion.editor",
   "extensionAllowedBadgeProviders": [
     "api.bintray.com",
     "api.travis-ci.com",

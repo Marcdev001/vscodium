@@ -65,49 +65,49 @@ if [[ "${DISABLE_UPDATE}" != "yes" ]]; then
 fi
 
 if [[ "${VSCODE_QUALITY}" == "insider" ]]; then
-  setpath "product" "nameShort" "VSCodium - Insiders"
-  setpath "product" "nameLong" "VSCodium - Insiders"
-  setpath "product" "applicationName" "codium-insiders"
-  setpath "product" "dataFolderName" ".vscodium-insiders"
-  setpath "product" "linuxIconName" "vscodium-insiders"
+  setpath "product" "nameShort" "Albion - Insiders"
+  setpath "product" "nameLong" "Albion - The AI Code Editor for Africa (Insiders)"
+  setpath "product" "applicationName" "albion-insiders"
+  setpath "product" "dataFolderName" ".albion-insiders"
+  setpath "product" "linuxIconName" "albion-insiders"
   setpath "product" "quality" "insider"
-  setpath "product" "urlProtocol" "vscodium-insiders"
-  setpath "product" "serverApplicationName" "codium-server-insiders"
-  setpath "product" "serverDataFolderName" ".vscodium-server-insiders"
-  setpath "product" "darwinBundleIdentifier" "com.vscodium.VSCodiumInsiders"
-  setpath "product" "win32AppUserModelId" "VSCodium.VSCodiumInsiders"
-  setpath "product" "win32DirName" "VSCodium Insiders"
-  setpath "product" "win32MutexName" "vscodiuminsiders"
-  setpath "product" "win32NameVersion" "VSCodium Insiders"
-  setpath "product" "win32RegValueName" "VSCodiumInsiders"
-  setpath "product" "win32ShellNameShort" "VSCodium Insiders"
+  setpath "product" "urlProtocol" "albion-insiders"
+  setpath "product" "serverApplicationName" "albion-server-insiders"
+  setpath "product" "serverDataFolderName" ".albion-server-insiders"
+  setpath "product" "darwinBundleIdentifier" "com.albion.editor.insiders"
+  setpath "product" "win32AppUserModelId" "Albion.Editor.Insiders"
+  setpath "product" "win32DirName" "Albion Insiders"
+  setpath "product" "win32MutexName" "albioninsiders"
+  setpath "product" "win32NameVersion" "Albion Insiders"
+  setpath "product" "win32RegValueName" "AlbionInsiders"
+  setpath "product" "win32ShellNameShort" "Albion Insiders"
   setpath "product" "win32AppId" "{{EF35BB36-FA7E-4BB9-B7DA-D1E09F2DA9C9}"
   setpath "product" "win32x64AppId" "{{B2E0DDB2-120E-4D34-9F7E-8C688FF839A2}"
   setpath "product" "win32arm64AppId" "{{44721278-64C6-4513-BC45-D48E07830599}"
   setpath "product" "win32UserAppId" "{{ED2E5618-3E7E-4888-BF3C-A6CCC84F586F}"
   setpath "product" "win32x64UserAppId" "{{20F79D0D-A9AC-4220-9A81-CE675FFB6B41}"
   setpath "product" "win32arm64UserAppId" "{{2E362F92-14EA-455A-9ABD-3E656BBBFE71}"
-  setpath "product" "tunnelApplicationName" "codium-insiders-tunnel"
-  setpath "product" "win32TunnelServiceMutex" "vscodiuminsiders-tunnelservice"
-  setpath "product" "win32TunnelMutex" "vscodiuminsiders-tunnel"
+  setpath "product" "tunnelApplicationName" "albion-insiders-tunnel"
+  setpath "product" "win32TunnelServiceMutex" "albioninsiders-tunnelservice"
+  setpath "product" "win32TunnelMutex" "albioninsiders-tunnel"
   setpath "product" "win32ContextMenu.x64.clsid" "90AAD229-85FD-43A3-B82D-8598A88829CF"
   setpath "product" "win32ContextMenu.arm64.clsid" "7544C31C-BDBF-4DDF-B15E-F73A46D6723D"
 else
-  setpath "product" "nameShort" "VSCodium"
-  setpath "product" "nameLong" "VSCodium"
-  setpath "product" "applicationName" "codium"
-  setpath "product" "linuxIconName" "vscodium"
+  setpath "product" "nameShort" "Albion"
+  setpath "product" "nameLong" "Albion - The AI Code Editor for Africa"
+  setpath "product" "applicationName" "albion"
+  setpath "product" "linuxIconName" "albion"
   setpath "product" "quality" "stable"
-  setpath "product" "urlProtocol" "vscodium"
-  setpath "product" "serverApplicationName" "codium-server"
-  setpath "product" "serverDataFolderName" ".vscodium-server"
-  setpath "product" "darwinBundleIdentifier" "com.vscodium"
-  setpath "product" "win32AppUserModelId" "VSCodium.VSCodium"
-  setpath "product" "win32DirName" "VSCodium"
-  setpath "product" "win32MutexName" "vscodium"
-  setpath "product" "win32NameVersion" "VSCodium"
-  setpath "product" "win32RegValueName" "VSCodium"
-  setpath "product" "win32ShellNameShort" "VSCodium"
+  setpath "product" "urlProtocol" "albion"
+  setpath "product" "serverApplicationName" "albion-server"
+  setpath "product" "serverDataFolderName" ".albion-server"
+  setpath "product" "darwinBundleIdentifier" "com.albion.editor"
+  setpath "product" "win32AppUserModelId" "Albion.Editor"
+  setpath "product" "win32DirName" "Albion"
+  setpath "product" "win32MutexName" "albion"
+  setpath "product" "win32NameVersion" "Albion"
+  setpath "product" "win32RegValueName" "Albion"
+  setpath "product" "win32ShellNameShort" "Albion"
   setpath "product" "win32AppId" "{{763CBF88-25C6-4B10-952F-326AE657F16B}"
   setpath "product" "win32x64AppId" "{{88DA3577-054F-4CA1-8122-7D820494CFFB}"
   setpath "product" "win32arm64AppId" "{{67DEE444-3D04-4258-B92A-BC1F0FF2CAE4}"
@@ -309,6 +309,9 @@ mkdir -p "${VERIFIER_DEST}"
 cp ../albion-verifier/verifier.js              "${VERIFIER_DEST}/"
 cp ../albion-verifier/supabase-autosave.js     "${VERIFIER_DEST}/"
 cp ../albion-verifier/albion-lifecycle.js      "${VERIFIER_DEST}/"
+cp ../albion-verifier/albion-status-bar.js     "${VERIFIER_DEST}/" 2>/dev/null || true
+cp ../albion-verifier/project-memory.js        "${VERIFIER_DEST}/" 2>/dev/null || true
+cp ../albion-verifier/repo-indexer.js          "${VERIFIER_DEST}/" 2>/dev/null || true
 cp ../albion-verifier/package.json             "${VERIFIER_DEST}/"
 cp ../albion-verifier/mcp-server.json          "${VERIFIER_DEST}/"
 
@@ -330,6 +333,24 @@ else
 fi
 
 echo "✅ Albion verifier module bundled into ${VERIFIER_DEST}"
+# ============================================================
+
+# ============================================================
+# ALBION: Bundle branding assets into resources
+# ============================================================
+echo "📦 Bundling Albion branding assets..."
+BRANDING_DEST="resources/albion/branding"
+mkdir -p "${BRANDING_DEST}"
+
+if [[ -d "../albion-branding" ]]; then
+  cp -r ../albion-branding/* "${BRANDING_DEST}/" 2>/dev/null || true
+  echo "✅ Bundled albion-branding into ${BRANDING_DEST}"
+elif [[ -d "albion-branding" ]]; then
+  cp -r albion-branding/* "${BRANDING_DEST}/" 2>/dev/null || true
+  echo "✅ Bundled albion-branding into ${BRANDING_DEST}"
+else
+  echo "⚠️  albion-branding directory not found"
+fi
 # ============================================================
 
 # ============================================================
