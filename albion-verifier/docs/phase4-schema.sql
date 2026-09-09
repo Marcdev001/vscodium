@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS public.billing_events (
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
   event_type TEXT NOT NULL, -- e.g., 'charge.success', 'subscription.create', 'subscription.disable'
   paystack_reference TEXT UNIQUE,
+  event_id TEXT,
+  provider TEXT DEFAULT 'paystack',
   amount NUMERIC(10, 2),
   currency TEXT DEFAULT 'NGN',
   status TEXT NOT NULL DEFAULT 'pending',
@@ -18,9 +20,15 @@ CREATE TABLE IF NOT EXISTS public.billing_events (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Safely add columns if billing_events already existed prior to Phase 6
+ALTER TABLE public.billing_events ADD COLUMN IF NOT EXISTS event_id TEXT;
+ALTER TABLE public.billing_events ADD COLUMN IF NOT EXISTS provider TEXT DEFAULT 'paystack';
+
 -- 2. Create indexes for user querying and idempotency lookups
 CREATE INDEX IF NOT EXISTS idx_billing_events_user ON public.billing_events(user_id);
 CREATE INDEX IF NOT EXISTS idx_billing_events_ref ON public.billing_events(paystack_reference);
+CREATE INDEX IF NOT EXISTS idx_billing_events_event_id ON public.billing_events(event_id);
+CREATE INDEX IF NOT EXISTS idx_billing_events_provider ON public.billing_events(provider);
 CREATE INDEX IF NOT EXISTS idx_billing_events_type ON public.billing_events(event_type);
 
 -- 3. Enable Row Level Security (RLS)

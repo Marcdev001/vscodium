@@ -15,7 +15,8 @@
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
-const fetch = require('node-fetch');
+const nodeFetch = require('node-fetch');
+const fetch = (...args) => (global.fetch ? global.fetch(...args) : nodeFetch(...args));
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const Sentry = require('@sentry/node');
@@ -73,7 +74,7 @@ const globalRateLimiter = rateLimit({
 });
 
 // Stricter rate limit on /webhooks/paystack: 5 requests per minute
-const webhookRateLimiter = rateLimit({
+const paystackRateLimiter = rateLimit({
   windowMs: 60 * 1000,
   limit: 5,
   standardHeaders: 'draft-7',
@@ -84,12 +85,34 @@ const webhookRateLimiter = rateLimit({
     res.setHeader('Retry-After', '60');
     return res.status(429).json({
       error: 'Too Many Requests',
-      message: 'Webhook rate limit exceeded: maximum 5 requests per minute.',
+      message: 'Paystack webhook rate limit exceeded: maximum 5 requests per minute.',
       retry_after: 60
     });
   },
   store: getRateLimitStore()
 });
+
+// Stricter rate limit on /webhooks/lemonsqueezy: 5 requests per minute
+const lemonSqueezyRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 5,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  validate: { keyGeneratorIpFallback: false },
+  keyGenerator: (req) => req.ip || 'lemonsqueezy-webhook',
+  handler: (req, res) => {
+    res.setHeader('Retry-After', '60');
+    return res.status(429).json({
+      error: 'Too Many Requests',
+      message: 'Lemon Squeezy webhook rate limit exceeded: maximum 5 requests per minute.',
+      retry_after: 60
+    });
+  },
+  store: getRateLimitStore()
+});
+
+const webhookRateLimiter = paystackRateLimiter;
+const processedWebhookIds = new Set();
 
 
 // ---------------------------------------------------------------------------
@@ -107,7 +130,10 @@ const PORT = process.env.PORT || 3000;
 const LITELLM_BASE_URL = process.env.LITELLM_BASE_URL || 'http://localhost:4000';
 const LITELLM_MASTER_KEY = process.env.LITELLM_MASTER_KEY || '';
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS || '*';
-const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || '';
+const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || process.env.PAYSTACK_TEST_SECRET_KEY || '';
+const LEMONSQUEEZY_WEBHOOK_SECRET = process.env.LEMONSQUEEZY_WEBHOOK_SECRET || '';
+const LEMONSQUEEZY_API_KEY = process.env.LEMONSQUEEZY_API_KEY || '';
+const LEMONSQUEEZY_STORE_ID = process.env.LEMONSQUEEZY_STORE_ID || '';
 
 // --- Free Tier Cloud Providers (Stacked Failover) ---
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
@@ -476,7 +502,7 @@ async function dispatchFreeTierChat(messages, metadata = {}) {
 // Accepts: { messages, model_preference, estimated_tokens, session_id }
 // Flow: Auth → Cap & Routing Check → Route to LiteLLM → Log Usage → Respond
 // ---------------------------------------------------------------------------
-app.post('/chat', authenticate, globalRateLimiter, async (req, res) => {
+app.post('/chat', globalRateLimiter, authenticate, async (req, res) => {
   const userId = req.user.id;
   const { messages, model_preference, estimated_tokens, session_id, project_path } = req.body;
 
@@ -702,10 +728,11 @@ app.post('/billing/topup-check', authenticate, async (req, res) => {
 // Paystack webhook listener with HMAC SHA512 signature verification
 // Handles: charge.success, subscription.create, subscription.disable
 // ---------------------------------------------------------------------------
-app.post('/webhooks/paystack', webhookRateLimiter, async (req, res) => {
+app.post('/webhooks/paystack', paystackRateLimiter, async (req, res) => {
   const signature = req.headers['x-paystack-signature'];
+  const secretKey = process.env.PAYSTACK_SECRET_KEY || process.env.PAYSTACK_TEST_SECRET_KEY || PAYSTACK_SECRET_KEY || '';
 
-  if (!signature || !PAYSTACK_SECRET_KEY) {
+  if (!signature || !secretKey) {
     console.warn('[WEBHOOK] Missing Paystack signature or secret key not configured');
     return res.status(401).json({ error: 'Missing or invalid signature' });
   }
@@ -713,7 +740,7 @@ app.post('/webhooks/paystack', webhookRateLimiter, async (req, res) => {
   // Verify HMAC SHA512 signature
   const rawBody = req.rawBody || Buffer.from(JSON.stringify(req.body));
   const hash = crypto
-    .createHmac('sha512', PAYSTACK_SECRET_KEY)
+    .createHmac('sha512', secretKey)
     .update(rawBody)
     .digest('hex');
 
@@ -729,9 +756,32 @@ app.post('/webhooks/paystack', webhookRateLimiter, async (req, res) => {
 
   const eventType = event.event;
   const eventData = event.data || {};
-  console.log(`[WEBHOOK] Verified Paystack event: ${eventType} (ref: ${eventData.reference || 'n/a'})`);
+  const paystackRef = eventData.reference || null;
+  console.log(`[WEBHOOK] Verified Paystack event: ${eventType} (ref: ${paystackRef || 'n/a'})`);
 
   try {
+    // Idempotency check: prevent double-processing if reference already recorded
+    if (paystackRef) {
+      if (processedWebhookIds.has(paystackRef)) {
+        console.log(`[WEBHOOK] Event with reference ${paystackRef} already processed. Skipping.`);
+        return res.status(200).json({ received: true, message: 'Already processed' });
+      }
+      try {
+        const { data: existingEvent } = await supabase
+          .from('billing_events')
+          .select('id')
+          .eq('paystack_reference', paystackRef)
+          .maybeSingle();
+
+        if (existingEvent) {
+          processedWebhookIds.add(paystackRef);
+          console.log(`[WEBHOOK] Event with reference ${paystackRef} already processed. Skipping.`);
+          return res.status(200).json({ received: true, message: 'Already processed' });
+        }
+      } catch (e) { /* ignore if table not created yet */ }
+      processedWebhookIds.add(paystackRef);
+    }
+
     let targetUserId = eventData.metadata?.user_id || eventData.customer?.metadata?.user_id;
 
     // Resolve user by email if not found directly in metadata
@@ -774,22 +824,209 @@ app.post('/webhooks/paystack', webhookRateLimiter, async (req, res) => {
 
     // Log event to public.billing_events audit table
     if (targetUserId) {
-      await supabase.from('billing_events').insert({
+      const eventInsert = {
         user_id: targetUserId,
         event_type: eventType,
-        paystack_reference: eventData.reference || null,
+        paystack_reference: paystackRef,
         amount: eventData.amount ? (eventData.amount / 100) : 0,
         currency: eventData.currency || 'NGN',
+        provider: 'paystack',
         status: 'success',
         raw_payload: event
-      }).catch(err => {
-        console.error('[WEBHOOK] Failed to log billing_event:', err.message);
-      });
+      };
+
+      const { error: insertErr } = await supabase.from('billing_events').insert(eventInsert);
+      if (insertErr) {
+        // Fallback without provider column if schema migration not yet run
+        if (insertErr.message && insertErr.message.includes('provider')) {
+          delete eventInsert.provider;
+          await supabase.from('billing_events').insert(eventInsert).catch(e => {
+            console.error('[WEBHOOK] Failed to log fallback billing_event:', e.message);
+          });
+        } else {
+          console.error('[WEBHOOK] Failed to log billing_event:', insertErr.message);
+        }
+      }
     }
 
     return res.status(200).json({ received: true });
   } catch (err) {
     console.error(`[WEBHOOK] Error processing event ${eventType}:`, err.message);
+    return res.status(500).json({ error: 'Webhook processing error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ROUTE: POST /webhooks/lemonsqueezy
+// Lemon Squeezy webhook listener with HMAC SHA256 signature verification
+// Handles: order_created, subscription_created, subscription_cancelled
+// ---------------------------------------------------------------------------
+app.post('/webhooks/lemonsqueezy', lemonSqueezyRateLimiter, async (req, res) => {
+  const signature = req.headers['x-signature'];
+  const secretKey = process.env.LEMONSQUEEZY_WEBHOOK_SECRET || LEMONSQUEEZY_WEBHOOK_SECRET || '';
+
+  if (!signature || !secretKey) {
+    console.warn('[WEBHOOK-LS] Missing Lemon Squeezy signature or secret key not configured');
+    return res.status(401).json({ error: 'Missing or invalid signature' });
+  }
+
+  // Verify HMAC SHA256 signature against raw body
+  const rawBody = req.rawBody || Buffer.from(JSON.stringify(req.body));
+  const hash = crypto
+    .createHmac('sha256', secretKey)
+    .update(rawBody)
+    .digest('hex');
+
+  if (hash !== signature) {
+    console.error('[WEBHOOK-LS] Invalid Lemon Squeezy signature received');
+    return res.status(401).json({ error: 'Signature mismatch' });
+  }
+
+  const payload = req.body;
+  if (!payload) {
+    return res.status(400).json({ error: 'Invalid event payload' });
+  }
+
+  const eventName = payload.meta?.event_name || payload.event || payload.type || '';
+  const customData = payload.meta?.custom_data || {};
+  const eventData = payload.data || {};
+  const attributes = eventData.attributes || {};
+
+  // Extract event_id for idempotency
+  const eventId = String(
+    payload.meta?.webhook_id ||
+    payload.meta?.event_id ||
+    eventData.id ||
+    `ls_${Date.now()}`
+  );
+
+  console.log(`[WEBHOOK-LS] Verified Lemon Squeezy event: ${eventName} (event_id: ${eventId})`);
+
+  try {
+    // Idempotency check: prevent double-processing if event_id or reference already recorded
+    if (eventId) {
+      if (processedWebhookIds.has(eventId)) {
+        console.log(`[WEBHOOK-LS] Event ${eventId} already processed. Skipping duplicate.`);
+        return res.status(200).json({ received: true, message: 'Already processed' });
+      }
+      try {
+        const { data: existing } = await supabase
+          .from('billing_events')
+          .select('id')
+          .or(`event_id.eq.${eventId},paystack_reference.eq.${eventId}`)
+          .maybeSingle();
+
+        if (existing) {
+          processedWebhookIds.add(eventId);
+          console.log(`[WEBHOOK-LS] Event ${eventId} already processed. Skipping duplicate.`);
+          return res.status(200).json({ received: true, message: 'Already processed' });
+        }
+      } catch (e) { /* ignore if table not created yet */ }
+      processedWebhookIds.add(eventId);
+    }
+
+    // Resolve user: from custom_data.user_id, custom_data.userId, or attributes.user_email
+    let targetUserId = customData.user_id || customData.userId || customData.customer_id;
+    const userEmail = attributes.user_email || attributes.customer_email;
+
+    if (!targetUserId && userEmail) {
+      const { data: userData } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', userEmail)
+        .single();
+      if (userData) targetUserId = userData.id;
+    }
+
+    // Resolve subscription tier:
+    const rawTier = (
+      customData.tier ||
+      attributes.first_order_item?.variant_name ||
+      attributes.variant_name ||
+      attributes.product_name ||
+      'starter'
+    ).toLowerCase();
+
+    let resolvedTier = 'starter';
+    if (rawTier.includes('pro')) {
+      resolvedTier = 'pro';
+    } else if (rawTier.includes('learner')) {
+      resolvedTier = 'learner';
+    } else if (rawTier.includes('starter')) {
+      resolvedTier = 'starter';
+    } else if (tierCaps[rawTier]) {
+      resolvedTier = rawTier;
+    }
+
+    // Process subscription events
+    if (
+      eventName === 'order_created' ||
+      eventName === 'subscription_created' ||
+      eventName === 'subscription_resumed'
+    ) {
+      if (targetUserId) {
+        await supabase
+          .from('subscriptions')
+          .upsert({
+            user_id: targetUserId,
+            tier: resolvedTier,
+            status: 'active',
+            cycle_start: new Date().toISOString()
+          }, {
+            onConflict: 'user_id'
+          });
+        console.log(`[WEBHOOK-LS] Activated subscription (${resolvedTier}) for user ${targetUserId}`);
+      }
+    } else if (
+      eventName === 'subscription_cancelled' ||
+      eventName === 'subscription_expired'
+    ) {
+      if (targetUserId) {
+        await supabase
+          .from('subscriptions')
+          .update({ status: 'cancelled' })
+          .eq('user_id', targetUserId);
+        console.log(`[WEBHOOK-LS] Cancelled subscription for user ${targetUserId}`);
+      }
+    }
+
+    // Log event to public.billing_events audit table
+    if (targetUserId) {
+      const totalAmount = attributes.total_usd
+        ? (attributes.total_usd / 100)
+        : (attributes.total ? (attributes.total / 100) : 0);
+      const currency = attributes.currency || 'USD';
+
+      const billingInsert = {
+        user_id: targetUserId,
+        event_type: eventName,
+        event_id: eventId,
+        paystack_reference: eventId,
+        provider: 'lemonsqueezy',
+        amount: totalAmount,
+        currency: currency,
+        status: 'success',
+        raw_payload: payload
+      };
+
+      const { error: insertErr } = await supabase.from('billing_events').insert(billingInsert);
+      if (insertErr) {
+        if (insertErr.message && (insertErr.message.includes('provider') || insertErr.message.includes('event_id'))) {
+          // Fallback if provider or event_id columns are not yet present
+          delete billingInsert.provider;
+          delete billingInsert.event_id;
+          await supabase.from('billing_events').insert(billingInsert).catch(e => {
+            console.error('[WEBHOOK-LS] Failed to log fallback billing_event:', e.message);
+          });
+        } else {
+          console.error('[WEBHOOK-LS] Failed to log billing_event:', insertErr.message);
+        }
+      }
+    }
+
+    return res.status(200).json({ received: true });
+  } catch (err) {
+    console.error(`[WEBHOOK-LS] Error processing event ${eventName}:`, err.message);
     return res.status(500).json({ error: 'Webhook processing error' });
   }
 });
@@ -830,6 +1067,7 @@ if (require.main === module) {
 
 module.exports = {
   app,
+  supabase,
   dispatchFreeTierChat,
   checkCapBeforeRoute,
   tierCaps,
