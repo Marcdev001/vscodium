@@ -109,6 +109,16 @@ const LITELLM_MASTER_KEY = process.env.LITELLM_MASTER_KEY || '';
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS || '*';
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || '';
 
+// --- Free Tier Cloud Providers (Stacked Failover) ---
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+const OPENROUTER_ENDPOINT = process.env.OPENROUTER_ENDPOINT || 'https://openrouter.ai/api/v1/chat/completions';
+const GROQ_ENDPOINT = process.env.GROQ_ENDPOINT || 'https://api.groq.com/openai/v1/chat/completions';
+const OPENROUTER_FREE_MODEL = process.env.OPENROUTER_FREE_MODEL || 'deepseek/deepseek-r1:free';
+const GROQ_FREE_MODEL = process.env.GROQ_FREE_MODEL || 'llama-3.1-8b-instant';
+
+const DAILY_FREE_LIMIT_MESSAGE = 'Daily free cloud AI limit reached. Please upgrade to the Learner tier ($2) for premium cloud access.';
+
 // ---------------------------------------------------------------------------
 // SUPABASE CLIENT (service role — server-side only, never expose to client)
 // ---------------------------------------------------------------------------
@@ -119,12 +129,13 @@ const supabase = createClient(
 
 // ---------------------------------------------------------------------------
 // TIER CAPS — tokens per billing cycle (Retention-First Math)
-// -1 indicates unlimited (local $0 model).
+// -1 indicates unlimited ($0 cloud free tier models).
 // NEVER modify without explicit architectural approval.
 // ---------------------------------------------------------------------------
 const tierCaps = {
   free: {
-    'muse-glimmer': -1
+    'openrouter-free': -1,
+    'groq-free': -1
   },
   learner: {
     'deepseek-v4-flash': 2000000
@@ -144,6 +155,7 @@ const tierCaps = {
 };
 
 const PREMIUM_TOGGLE_MODELS = new Set(['deepseek-v4-pro', 'glm-5.2']);
+const FREE_TIER_MODELS = new Set(['openrouter-free', 'groq-free']);
 
 // ---------------------------------------------------------------------------
 // EXPRESS APP
@@ -229,11 +241,11 @@ async function checkCapBeforeRoute(userId, { forceModel = null, hasImages = fals
   }
   const cycleStart = subscription ? subscription.cycle_start : new Date(0).toISOString();
 
-  // Rule a: Free tier ALWAYS routes to muse-glimmer. Never a paid model.
+  // Rule a: Free tier ALWAYS routes to openrouter-free. Never a paid model.
   if (tier === 'free') {
     return {
       tier: 'free',
-      targetModel: 'muse-glimmer',
+      targetModel: 'openrouter-free',
       isFreeTier: true,
       allCapsExhausted: false,
       warning: null,
@@ -241,7 +253,10 @@ async function checkCapBeforeRoute(userId, { forceModel = null, hasImages = fals
       currentUsage: 0,
       tierCap: -1,
       maxUtilization: 0,
-      capsSummary: { 'muse-glimmer': { used: 0, cap: -1, percent: 0 } }
+      capsSummary: {
+        'openrouter-free': { used: 0, cap: -1, percent: 0 },
+        'groq-free': { used: 0, cap: -1, percent: 0 }
+      }
     };
   }
 
@@ -294,12 +309,12 @@ async function checkCapBeforeRoute(userId, { forceModel = null, hasImages = fals
   const allCapsExhausted = !anyPaidRemaining;
   const overallPercent = Number(((flashUsed / flashCap) * 100).toFixed(1));
 
-  // Rule c: Paid tier, ALL paid caps exhausted -> force muse-glimmer
+  // Rule c: Paid tier, ALL paid caps exhausted -> force openrouter-free
   if (allCapsExhausted) {
-    console.warn(`[CAP] User ${userId} (${tier}) exhausted all paid caps. Forcing muse-glimmer.`);
+    console.warn(`[CAP] User ${userId} (${tier}) exhausted all paid caps. Forcing free cloud tier (OpenRouter/Groq).`);
     return {
       tier,
-      targetModel: 'muse-glimmer',
+      targetModel: 'openrouter-free',
       isFreeTier: false,
       allCapsExhausted: true,
       warning: 'all_caps_exhausted',
@@ -355,12 +370,12 @@ async function checkCapBeforeRoute(userId, { forceModel = null, hasImages = fals
 
   // Fallback if no routine cloud model has quota:
   if (!selectedModel) {
-    selectedModel = 'muse-glimmer';
+    selectedModel = 'openrouter-free';
   }
 
   // Rule d: Hard guard against paid model leakage
-  if (selectedModel !== 'muse-glimmer' && allCapsExhausted) {
-    selectedModel = 'muse-glimmer';
+  if (!FREE_TIER_MODELS.has(selectedModel) && allCapsExhausted) {
+    selectedModel = 'openrouter-free';
     console.error('[CAP] Paid model blocked at exhausted caps.');
   }
 
@@ -383,6 +398,77 @@ async function checkCapBeforeRoute(userId, { forceModel = null, hasImages = fals
     maxUtilization,
     capsSummary
   };
+}
+
+// ---------------------------------------------------------------------------
+// STACKED CLOUD FREE TIER DISPATCH
+// Attempt 1: OpenRouter Free API (deepseek/deepseek-r1:free or configured)
+// Catch 429/503: Immediately failover to Attempt 2: Groq Free API (llama-3.1-8b-instant or configured)
+// Catch Final Failure: Return 503 with exact upgrade message
+// Strictly guarantees NEVER falling back to a paid model.
+// ---------------------------------------------------------------------------
+async function dispatchFreeTierChat(messages, metadata = {}) {
+  // ATTEMPT 1: OpenRouter Free
+  try {
+    const orResponse = await fetch(OPENROUTER_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+        'HTTP-Referer': 'https://albion.dev',
+        'X-Title': 'Albion Editor'
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_FREE_MODEL,
+        messages
+      })
+    });
+
+    if (orResponse.status === 429 || orResponse.status === 503 || !orResponse.ok) {
+      const errText = await orResponse.text().catch(() => '');
+      console.warn(`[FREE-TIER] OpenRouter returned HTTP ${orResponse.status}: ${errText}. Attempting Groq fallback...`);
+    } else {
+      const data = await orResponse.json();
+      return { success: true, model: 'openrouter-free', data };
+    }
+  } catch (err) {
+    console.warn(`[FREE-TIER] OpenRouter request failed: ${err.message}. Attempting Groq fallback...`);
+  }
+
+  // ATTEMPT 2: Groq Free Fallback
+  try {
+    const groqResponse = await fetch(GROQ_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GROQ_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: GROQ_FREE_MODEL,
+        messages
+      })
+    });
+
+    if (groqResponse.status === 429 || groqResponse.status === 503 || !groqResponse.ok) {
+      const errText = await groqResponse.text().catch(() => '');
+      console.error(`[FREE-TIER] Groq returned HTTP ${groqResponse.status}: ${errText}. Both free tiers exhausted.`);
+      return {
+        success: false,
+        status: 503,
+        error: DAILY_FREE_LIMIT_MESSAGE
+      };
+    }
+
+    const data = await groqResponse.json();
+    return { success: true, model: 'groq-free', data };
+  } catch (err) {
+    console.error(`[FREE-TIER] Groq request failed: ${err.message}. Both free tiers exhausted.`);
+    return {
+      success: false,
+      status: 503,
+      error: DAILY_FREE_LIMIT_MESSAGE
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -472,7 +558,28 @@ app.post('/chat', authenticate, globalRateLimiter, async (req, res) => {
       res.setHeader('X-Albion-Usage-Warning', capResult.warning);
     }
 
-    // STEP 5: Route via direct HTTP POST to LiteLLM (OpenAI-compatible)
+    // STEP 5: Route request
+    // Free Tier OR All Caps Exhausted: Dispatch to Stacked Cloud Free Tier (OpenRouter -> Groq)
+    // NEVER call LiteLLM or paid DeepInfra/Together models when caps are exhausted.
+    if (capResult.isFreeTier || capResult.allCapsExhausted || FREE_TIER_MODELS.has(targetModel)) {
+      const freeResult = await dispatchFreeTierChat(orderedMessages, {
+        userId,
+        project_path
+      });
+
+      if (!freeResult.success) {
+        return res.status(503).json({
+          error: freeResult.error || DAILY_FREE_LIMIT_MESSAGE
+        });
+      }
+
+      // Update active model header with the specific free model that answered
+      res.setHeader('X-Albion-Active-Model', freeResult.model);
+
+      return res.json(freeResult.data);
+    }
+
+    // Paid Cloud Routing via LiteLLM (OpenAI-compatible)
     const providerResponse = await fetch(`${LITELLM_BASE_URL}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -498,21 +605,13 @@ app.post('/chat', authenticate, globalRateLimiter, async (req, res) => {
       const errorText = await providerResponse.text().catch(() => 'Unknown provider error');
       console.error(`[CHAT] Provider returned ${providerResponse.status} for model ${targetModel} (user ${userId}): ${errorText}`);
 
-      // Rule 2d: Local muse-glimmer unreachable (Ollama down) -> 503
-      // NEVER silently fall back to a paid model.
-      if (targetModel === 'muse-glimmer') {
-        return res.status(503).json({
-          error: 'Local free model offline. Start Ollama or top up to unlock cloud models.'
-        });
-      }
-
       throw new Error(`Provider returned HTTP ${providerResponse.status}`);
     }
 
     const data = await providerResponse.json();
 
     // STEP 7: Synchronously log usage BEFORE responding to client (paid models only)
-    if (targetModel !== 'muse-glimmer') {
+    if (!FREE_TIER_MODELS.has(targetModel)) {
       const { error: logError } = await supabase.from('usage_logs').insert({
         user_id: userId,
         model: targetModel,
@@ -542,10 +641,9 @@ app.post('/chat', authenticate, globalRateLimiter, async (req, res) => {
 
     console.error(`[CHAT] Error for user ${userId}:`, err.message);
 
-    // Rule 2d: If muse-glimmer was target and failed (e.g. connection refused to Ollama)
-    if (typeof targetModel !== 'undefined' && targetModel === 'muse-glimmer') {
+    if (typeof targetModel !== 'undefined' && FREE_TIER_MODELS.has(targetModel)) {
       return res.status(503).json({
-        error: 'Local free model offline. Start Ollama or top up to unlock cloud models.'
+        error: DAILY_FREE_LIMIT_MESSAGE
       });
     }
 
@@ -722,8 +820,19 @@ app.use((err, req, res, next) => {
 // ---------------------------------------------------------------------------
 // START SERVER
 // ---------------------------------------------------------------------------
-app.listen(PORT, () => {
-  console.log(`Albion Proxy running on port ${PORT}`);
-  console.log(`LiteLLM target: ${LITELLM_BASE_URL}`);
-  console.log(`CORS origins: ${ALLOWED_ORIGINS}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Albion Proxy running on port ${PORT}`);
+    console.log(`LiteLLM target: ${LITELLM_BASE_URL}`);
+    console.log(`CORS origins: ${ALLOWED_ORIGINS}`);
+  });
+}
+
+module.exports = {
+  app,
+  dispatchFreeTierChat,
+  checkCapBeforeRoute,
+  tierCaps,
+  FREE_TIER_MODELS,
+  DAILY_FREE_LIMIT_MESSAGE
+};

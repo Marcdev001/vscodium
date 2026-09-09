@@ -125,7 +125,8 @@ function formatTokens(num) {
 function getModelShortLabel(model) {
   if (!model) return 'Flash';
   const m = model.toLowerCase();
-  if (m.includes('muse-glimmer')) return 'Muse Glimmer';
+  if (m.includes('openrouter')) return 'OpenRouter';
+  if (m.includes('groq')) return 'Groq';
   if (m.includes('glm')) return 'GLM';
   if (m.includes('pro')) return 'Pro';
   if (m.includes('qwen')) return 'Qwen';
@@ -213,14 +214,19 @@ function renderStatusBar(vscode) {
 
   const tierStr = formatTierName(tier);
 
-  // Case 1: Muse Glimmer is active (Free tier or exhausted cloud caps)
-  if (activeModel.toLowerCase().includes('muse-glimmer') || tier === 'free') {
-    statusBarItem.text = `$(cloud-offline) Muse Glimmer (Free)`;
+  // Case 1: Free tier or exhausted cloud caps
+  const isFreeModel = activeModel.toLowerCase().includes('openrouter') ||
+                      activeModel.toLowerCase().includes('groq') ||
+                      activeModel.toLowerCase().includes('free');
+
+  if (isFreeModel || tier === 'free') {
+    const freeLabel = activeModel.toLowerCase().includes('groq') ? 'Groq (Free)' : 'OpenRouter (Free)';
+    statusBarItem.text = `$(cloud) ${freeLabel}`;
     statusBarItem.backgroundColor = undefined;
     statusBarItem.tooltip = [
-      `Albion Local Mode: Muse Glimmer ($0 local model)`,
-      `• Local free model — top up at your account page to unlock cloud models.`,
-      `• Status: Active`,
+      `Albion Cloud Free Tier: ${freeLabel}`,
+      `• Stacked zero-cost cloud access (OpenRouter + Groq).`,
+      `• Upgrade to Learner tier ($2) for dedicated cloud capacity.`,
       `Click for account details.`
     ].join('\n');
     return;
@@ -232,7 +238,7 @@ function renderStatusBar(vscode) {
   let flashSummary = capsSummary['deepseek-v4-flash'] || null;
 
   for (const [modelName, info] of Object.entries(capsSummary)) {
-    if (modelName === 'deepseek-v4-flash' || modelName === 'muse-glimmer') continue;
+    if (modelName === 'deepseek-v4-flash' || modelName === 'openrouter-free' || modelName === 'groq-free' || modelName === 'muse-glimmer') continue;
     if (!mostConstrained || info.percent > mostConstrained.percent) {
       mostConstrained = { model: modelName, ...info };
     }
@@ -271,7 +277,7 @@ function renderStatusBar(vscode) {
     statusBarItem.tooltip = [
       `⚠️ ALBION USAGE: CAPS EXHAUSTED`,
       `• Cloud caps reached for tier ${tierStr}.`,
-      `• Falling back to local Muse Glimmer.`,
+      `• Falling back to stacked cloud free tier (OpenRouter/Groq).`,
       `Click to manage your account.`
     ].join('\n');
   } else if (warning === 'approaching_limit') {

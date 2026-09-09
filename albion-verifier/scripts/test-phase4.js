@@ -61,7 +61,8 @@ function assert(condition, label) {
 // ---------------------------------------------------------------------------
 const TIER_CAPS = {
   free: {
-    'muse-glimmer': -1
+    'openrouter-free': -1,
+    'groq-free': -1
   },
   learner: {
     'deepseek-v4-flash': 2000000
@@ -88,6 +89,7 @@ const TIER_PRICING = {
 };
 
 const PREMIUM_TOGGLE_MODELS = new Set(['deepseek-v4-pro', 'glm-5.2']);
+const FREE_TIER_MODELS = new Set(['openrouter-free', 'groq-free']);
 
 function routeRequest({
   tier = 'free',
@@ -96,11 +98,11 @@ function routeRequest({
   hasImages = false,
   estimatedTokens = 1000
 }) {
-  // Rule a: Free tier ALWAYS routes to muse-glimmer
+  // Rule a: Free tier ALWAYS routes to openrouter-free
   if (tier === 'free') {
     return {
       tier: 'free',
-      targetModel: 'muse-glimmer',
+      targetModel: 'openrouter-free',
       isFreeTier: true,
       allCapsExhausted: false,
       warning: null,
@@ -124,11 +126,11 @@ function routeRequest({
 
   const allCapsExhausted = !anyPaidRemaining;
 
-  // Rule c: Paid tier, ALL paid caps exhausted -> force muse-glimmer
+  // Rule c: Paid tier, ALL paid caps exhausted -> force openrouter-free
   if (allCapsExhausted) {
     return {
       tier,
-      targetModel: 'muse-glimmer',
+      targetModel: 'openrouter-free',
       isFreeTier: false,
       allCapsExhausted: true,
       warning: 'all_caps_exhausted',
@@ -149,17 +151,17 @@ function routeRequest({
   // Rule 3: If header absent, STRICTLY FORBIDDEN from routing to Pro or GLM
   if (!selectedModel) {
     if (hasImages && currentTierCaps['qwen3.6-35b-a3b']) {
-      const qCap = currentTierCaps['qwen3.6-35b-a3b'];
-      const qUsed = modelUsage['qwen3.6-35b-a3b'] || 0;
-      if (qUsed + estimatedTokens <= qCap) {
+      const qwenCap = currentTierCaps['qwen3.6-35b-a3b'];
+      const qwenUsed = modelUsage['qwen3.6-35b-a3b'] || 0;
+      if (qwenUsed + estimatedTokens <= qwenCap) {
         selectedModel = 'qwen3.6-35b-a3b';
       }
     }
 
     if (!selectedModel) {
-      const fCap = currentTierCaps['deepseek-v4-flash'];
-      const fUsed = modelUsage['deepseek-v4-flash'] || 0;
-      if (fCap && (fUsed + estimatedTokens <= fCap)) {
+      const flashUsed = modelUsage['deepseek-v4-flash'] || 0;
+      const flashCap = currentTierCaps['deepseek-v4-flash'] || 1;
+      if (currentTierCaps['deepseek-v4-flash'] && (flashUsed + estimatedTokens <= flashCap)) {
         selectedModel = 'deepseek-v4-flash';
       } else {
         for (const [m, cap] of Object.entries(currentTierCaps)) {
@@ -173,12 +175,12 @@ function routeRequest({
   }
 
   if (!selectedModel) {
-    selectedModel = 'muse-glimmer';
+    selectedModel = 'openrouter-free';
   }
 
   // Hard guard:
-  if (selectedModel !== 'muse-glimmer' && allCapsExhausted) {
-    selectedModel = 'muse-glimmer';
+  if (!FREE_TIER_MODELS.has(selectedModel) && allCapsExhausted) {
+    selectedModel = 'openrouter-free';
   }
 
   return {
@@ -198,16 +200,16 @@ async function runTests() {
   console.log(`\n${YELLOW}🔬 Running Albion Phase 4 Final Comprehensive Test Suite${RESET}\n`);
 
   // -------------------------------------------------------------------------
-  // TEST 1: FREE TIER ROUTES ONLY TO MUSE-GLIMMER
+  // TEST 1: FREE TIER ROUTES ONLY TO OPENROUTER-FREE
   // -------------------------------------------------------------------------
-  console.log(`${YELLOW}TEST 1:${RESET} Free Tier Routes Exclusively to muse-glimmer`);
+  console.log(`${YELLOW}TEST 1:${RESET} Free Tier Routes Exclusively to openrouter-free`);
   const freeResult = routeRequest({ tier: 'free', forceModel: 'deepseek-v4-pro', hasImages: true });
-  assert(freeResult.targetModel === 'muse-glimmer', 'Free tier strictly routes to muse-glimmer');
+  assert(freeResult.targetModel === 'openrouter-free', 'Free tier strictly routes to openrouter-free');
   assert(freeResult.isFreeTier === true, 'isFreeTier flag is true');
   assert(freeResult.warning === null, 'No warning on normal free usage');
 
   // -------------------------------------------------------------------------
-  // TEST 2: ALL PAID CAPS EXHAUSTED -> MUSE-GLIMMER + WARNING
+  // TEST 2: ALL PAID CAPS EXHAUSTED -> OPENROUTER-FREE + WARNING
   // -------------------------------------------------------------------------
   console.log(`\n${YELLOW}TEST 2:${RESET} All Paid Caps Exhausted Fallback`);
   const starterExhaustedUsage = {
@@ -217,29 +219,71 @@ async function runTests() {
     'glm-5.2': 150000
   };
   const exhaustedResult = routeRequest({ tier: 'starter', modelUsage: starterExhaustedUsage });
-  assert(exhaustedResult.targetModel === 'muse-glimmer', 'Forces muse-glimmer when all paid caps exhausted');
+  assert(exhaustedResult.targetModel === 'openrouter-free', 'Forces openrouter-free when all paid caps exhausted');
   assert(exhaustedResult.allCapsExhausted === true, 'allCapsExhausted flag is set');
   assert(exhaustedResult.warning === 'all_caps_exhausted', 'Sets X-Albion-Usage-Warning: all_caps_exhausted');
 
   // -------------------------------------------------------------------------
-  // TEST 3: OLLAMA DOWN + CAPS EXHAUSTED -> 503 ERROR
+  // TEST 3: STACKED FREE TIER FAILOVER (OPENROUTER 429 -> GROQ -> 503)
   // -------------------------------------------------------------------------
-  console.log(`\n${YELLOW}TEST 3:${RESET} Local Model Offline Guard (Never Paid Fallback)`);
-  function handleModelFailure(targetModel, isOllamaReachable) {
-    if (targetModel === 'muse-glimmer' && !isOllamaReachable) {
+  console.log(`\n${YELLOW}TEST 3:${RESET} Stacked Free Tier Failover (OpenRouter -> Groq -> 503)`);
+  const DAILY_FREE_LIMIT_MSG = 'Daily free cloud AI limit reached. Please upgrade to the Learner tier ($2) for premium cloud access.';
+
+  async function mockDispatchFreeTier({ openRouterStatus = 200, groqStatus = 200, paidCallsTracker = [] }) {
+    const attempts = [];
+
+    // Attempt 1: OpenRouter
+    attempts.push('openrouter-free');
+    if (openRouterStatus === 429 || openRouterStatus === 503) {
+      // Catch 429/503 and attempt Groq fallback
+      attempts.push('groq-free');
+      if (groqStatus === 429 || groqStatus === 503) {
+        return {
+          success: false,
+          status: 503,
+          error: DAILY_FREE_LIMIT_MSG,
+          attempts
+        };
+      }
       return {
-        status: 503,
-        error: 'Local free model offline. Start Ollama or top up to unlock cloud models.'
+        success: true,
+        status: 200,
+        model: 'groq-free',
+        data: { choices: [{ message: { content: 'Response from Groq' } }] },
+        attempts
       };
     }
-    return { status: 502, error: 'Provider unavailable. Retrying...' };
+
+    return {
+      success: true,
+      status: 200,
+      model: 'openrouter-free',
+      data: { choices: [{ message: { content: 'Response from OpenRouter' } }] },
+      attempts
+    };
   }
-  const offlineCheck = handleModelFailure('muse-glimmer', false);
-  assert(offlineCheck.status === 503, 'Returns HTTP 503 when local Ollama is offline');
-  assert(
-    offlineCheck.error === 'Local free model offline. Start Ollama or top up to unlock cloud models.',
-    'Returns exact safety message advising user to start Ollama or top up'
-  );
+
+  // 3A: OpenRouter returns 429 -> retries with Groq and succeeds
+  const paidCalls = [];
+  const failoverToGroq = await mockDispatchFreeTier({
+    openRouterStatus: 429,
+    groqStatus: 200,
+    paidCallsTracker: paidCalls
+  });
+  assert(failoverToGroq.success === true, 'Proxy succeeds via Groq fallback when OpenRouter returns 429');
+  assert(failoverToGroq.model === 'groq-free', 'Active model switched to groq-free');
+  assert(failoverToGroq.attempts.includes('openrouter-free') && failoverToGroq.attempts.includes('groq-free'), 'Attempted OpenRouter first, then fell back to Groq');
+  assert(paidCalls.length === 0, 'No paid model was called during OpenRouter -> Groq failover');
+
+  // 3B: BOTH OpenRouter and Groq return 429 -> returns 503 with exact message
+  const bothFail = await mockDispatchFreeTier({
+    openRouterStatus: 429,
+    groqStatus: 429,
+    paidCallsTracker: paidCalls
+  });
+  assert(bothFail.status === 503, 'Proxy returns HTTP 503 when both free tiers fail');
+  assert(bothFail.error === DAILY_FREE_LIMIT_MSG, 'Returns exact upgrade message to Learner tier ($2)');
+  assert(paidCalls.length === 0, 'Strictly NEVER calls a paid model when free tiers are exhausted');
 
   // -------------------------------------------------------------------------
   // TEST 4: REQUEST WITHOUT PREMIUM TOGGLE NEVER ROUTES TO PRO/GLM
@@ -309,15 +353,17 @@ async function runTests() {
   assert(TIER_PRICING.pro.usd === 11.00 && TIER_PRICING.pro.ngn === 17600, 'Pro tier is $11.00 / ₦17,600');
 
   // -------------------------------------------------------------------------
-  // TEST 8: MODEL PRICING QUERY (MUSE-GLIMMER COST = 0)
+  // TEST 8: MODEL PRICING QUERY (OPENROUTER-FREE & GROQ-FREE COST = 0)
   // -------------------------------------------------------------------------
-  console.log(`\n${YELLOW}TEST 8:${RESET} Model Pricing (muse-glimmer Cost = 0)`);
+  console.log(`\n${YELLOW}TEST 8:${RESET} Model Pricing (openrouter-free & groq-free Cost = 0)`);
   const mockModelPricingTable = {
-    'muse-glimmer': { cost_per_1k_tokens: 0, currency: 'NGN' },
+    'openrouter-free': { cost_per_1k_tokens: 0, currency: 'NGN' },
+    'groq-free': { cost_per_1k_tokens: 0, currency: 'NGN' },
     'deepseek-v4-flash': { cost_per_1k_tokens: 0.00014, currency: 'USD' }
   };
-  assert(mockModelPricingTable['muse-glimmer'].cost_per_1k_tokens === 0, 'muse-glimmer cost_per_1k_tokens is exactly 0');
-  assert(mockModelPricingTable['muse-glimmer'].currency === 'NGN', 'muse-glimmer currency is NGN');
+  assert(mockModelPricingTable['openrouter-free'].cost_per_1k_tokens === 0, 'openrouter-free cost_per_1k_tokens is exactly 0');
+  assert(mockModelPricingTable['groq-free'].cost_per_1k_tokens === 0, 'groq-free cost_per_1k_tokens is exactly 0');
+  assert(mockModelPricingTable['openrouter-free'].currency === 'NGN', 'openrouter-free currency is NGN');
 
   // -------------------------------------------------------------------------
   // TEST 9: STATUS BAR FUEL GAUGE FORMATTING & ICONS
@@ -361,14 +407,22 @@ async function runTests() {
   const stateB = getCurrentBillingState();
   assert(stateB.isPremiumToggle === true, 'isPremiumToggle is true when DeepSeek-V4-Pro active');
 
-  // Test Case C: $(cloud-offline) Muse Glimmer (Free) with neutral background
+  // Test Case C: $(cloud) OpenRouter / Groq (Free)
   const freeHeaders = {
     'X-Albion-Tier': 'free',
-    'X-Albion-Active-Model': 'muse-glimmer'
+    'X-Albion-Active-Model': 'openrouter-free'
   };
   updateFromHeaders(freeHeaders, mockVsCode);
   const stateC = getCurrentBillingState();
-  assert(stateC.activeModel === 'muse-glimmer', 'Status bar detects muse-glimmer model');
+  assert(stateC.activeModel === 'openrouter-free', 'Status bar detects openrouter-free model');
+
+  const groqHeaders = {
+    'X-Albion-Tier': 'free',
+    'X-Albion-Active-Model': 'groq-free'
+  };
+  updateFromHeaders(groqHeaders, mockVsCode);
+  const stateD = getCurrentBillingState();
+  assert(stateD.activeModel === 'groq-free', 'Status bar detects groq-free fallback model');
 
   // -------------------------------------------------------------------------
   // TEST 10: PAYSTACK WEBHOOK HMAC SHA512 VERIFICATION

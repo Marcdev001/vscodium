@@ -27,7 +27,7 @@ Reads current cycle usage by querying `usage_logs` grouped by `model` and compar
 | `qwen3.6-35b-a3b` | Qwen 3.6 35B (UI/Vision) | Blue / Yellow / Red | [Used] / [Cap] tokens |
 | `deepseek-v4-pro` | DeepSeek V4 Pro (Reasoning) | Purple (Premium) / Yellow / Red | [Used] / [Cap] tokens |
 | `glm-5.2` | GLM 5.2 (Design/Frontend) | Purple (Premium) / Yellow / Red | [Used] / [Cap] tokens |
-| `muse-glimmer` | Muse Glimmer ($0 Local) | Green (Unlimited) | 0 / Unlimited ($0 local model) |
+| `openrouter-free` / `groq-free` | OpenRouter / Groq ($0 Cloud Free) | Green (Unlimited) | 0 / Unlimited ($0 cloud tier) |
 
 ### C. Top-Up & Re-Subscription Controls (Strict Financial Rule)
 - **Top-Up Button State**:
