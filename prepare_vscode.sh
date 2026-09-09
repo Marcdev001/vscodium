@@ -182,6 +182,19 @@ for file in ../patches/user/*.patch; do
 done
 # }}}
 
+# {{{ patch GitHub fetch authentication to bypass 60 req/hr rate limits
+if [[ -f "build/lib/fetch.ts" ]]; then
+  node -e "
+    const fs = require('fs');
+    const file = 'build/lib/fetch.ts';
+    let code = fs.readFileSync(file, 'utf8');
+    code = code.replace(/'User-Agent':\s*'VSCode Build'/g, \"'User-Agent': 'Albion-Build'\");
+    code = code.replace(/ghApiHeaders\.Authorization\s*=\s*'Basic '\s*\+\s*Buffer\.from\(process\.env\.GITHUB_TOKEN\)\.toString\('base64'\);/g, \"ghApiHeaders.Authorization = \\\`token \\\${process.env.GITHUB_TOKEN}\\\`;\");
+    fs.writeFileSync(file, code);
+  "
+fi
+# }}}
+
 set -x
 
 # {{{ install dependencies

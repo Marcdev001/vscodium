@@ -30,7 +30,8 @@ env:
   OS_NAME: osx
   VSCODE_QUALITY: ${{ (github.ref == 'refs/heads/insider' || (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'insider')) && 'insider' || 'stable' }}
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -78,6 +79,8 @@ jobs:
         run: ./build.sh
 
       - name: Prepare assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./prepare_assets.sh
         if: env.SHOULD_BUILD == 'yes' && github.event.inputs.generate_assets == 'true'
 

@@ -3,6 +3,8 @@
 
 set -ex
 
+export GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+
 . version.sh
 
 if [[ "${SHOULD_BUILD}" == "yes" ]]; then

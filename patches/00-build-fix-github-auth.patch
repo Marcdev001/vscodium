@@ -1,0 +1,12 @@
+--- a/build/lib/fetch.ts
++++ b/build/lib/fetch.ts
+@@ -107,7 +107,7 @@
+ const ghApiHeaders: Record<string, string> = {
+ 	Accept: 'application/vnd.github.v3+json',
+-	'User-Agent': 'VSCode Build',
++	'User-Agent': 'Albion-Build',
+ };
+ if (process.env.GITHUB_TOKEN) {
+-	ghApiHeaders.Authorization = 'Basic ' + Buffer.from(process.env.GITHUB_TOKEN).toString('base64');
++	ghApiHeaders.Authorization = `token ${process.env.GITHUB_TOKEN}`;
+ }

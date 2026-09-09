@@ -36,6 +36,10 @@ if [[ "${OS_NAME}" == "osx" ]]; then
 
   cargo build --release --target "${VSCODE_CLI_TARGET}" --bin=code
 
+  # Ensure destination directory exists for both x64 and arm64 builds
+  mkdir -p "../../VSCode-darwin-${VSCODE_ARCH}/${NAME_SHORT}.app/Contents/Resources/app/bin"
+
+  # Copy the binary safely
   cp "target/${VSCODE_CLI_TARGET}/release/code" "../../VSCode-darwin-${VSCODE_ARCH}/${NAME_SHORT}.app/Contents/Resources/app/bin/${TUNNEL_APPLICATION_NAME}"
 elif [[ "${OS_NAME}" == "windows" ]]; then
   if [[ "${VSCODE_ARCH}" == "arm64" ]]; then
@@ -54,6 +58,7 @@ elif [[ "${OS_NAME}" == "windows" ]]; then
 
   cargo build --release --target "${VSCODE_CLI_TARGET}" --bin=code
 
+  mkdir -p "../../VSCode-win32-${VSCODE_ARCH}/bin"
   cp "target/${VSCODE_CLI_TARGET}/release/code.exe" "../../VSCode-win32-${VSCODE_ARCH}/bin/${TUNNEL_APPLICATION_NAME}.exe"
 else
   export OPENSSL_LIB_DIR="$( pwd )/openssl/out/${VSCODE_ARCH}-linux/lib"
@@ -93,6 +98,7 @@ else
 
     cargo build --release --target "${VSCODE_CLI_TARGET}" --bin=code
 
+    mkdir -p "../../VSCode-linux-${VSCODE_ARCH}/bin"
     cp "target/${VSCODE_CLI_TARGET}/release/code" "../../VSCode-linux-${VSCODE_ARCH}/bin/${TUNNEL_APPLICATION_NAME}"
   fi
 fi
