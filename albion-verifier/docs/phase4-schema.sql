@@ -5,6 +5,43 @@
 -- Adds webhook audit logging for Paystack billing events and subscriptions.
 -- ===========================================================================
 
+-- 0. Create the subscription table used by cap enforcement and billing webhooks
+CREATE TABLE IF NOT EXISTS public.subscriptions (
+  user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  tier TEXT NOT NULL DEFAULT 'free',
+  cycle_start TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  status TEXT NOT NULL DEFAULT 'active',
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'free';
+ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS cycle_start TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+-- 0a. Create the usage ledger used by cap enforcement and reconciliation
+CREATE TABLE IF NOT EXISTS public.usage_logs (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  prompt_tokens BIGINT NOT NULL DEFAULT 0 CHECK (prompt_tokens >= 0),
+  completion_tokens BIGINT NOT NULL DEFAULT 0 CHECK (completion_tokens >= 0),
+  actual_cost NUMERIC(14, 8) NOT NULL DEFAULT 0 CHECK (actual_cost >= 0),
+  session_id TEXT,
+  timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_logs_user_timestamp
+  ON public.usage_logs(user_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_usage_logs_user_model_timestamp
+  ON public.usage_logs(user_id, model, timestamp);
+
+ALTER TABLE public.usage_logs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can view own usage logs" ON public.usage_logs;
+CREATE POLICY "Users can view own usage logs"
+  ON public.usage_logs FOR SELECT
+  USING (auth.uid() = user_id);
+
 -- 1. Create the billing_events table
 CREATE TABLE IF NOT EXISTS public.billing_events (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,

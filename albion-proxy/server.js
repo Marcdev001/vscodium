@@ -140,7 +140,7 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const OPENROUTER_ENDPOINT = process.env.OPENROUTER_ENDPOINT || 'https://openrouter.ai/api/v1/chat/completions';
 const GROQ_ENDPOINT = process.env.GROQ_ENDPOINT || 'https://api.groq.com/openai/v1/chat/completions';
-const OPENROUTER_FREE_MODEL = process.env.OPENROUTER_FREE_MODEL || 'deepseek/deepseek-r1:free';
+const OPENROUTER_FREE_MODEL = process.env.OPENROUTER_FREE_MODEL || 'qwen/qwen3.8-27b:free';
 const GROQ_FREE_MODEL = process.env.GROQ_FREE_MODEL || 'llama-3.1-8b-instant';
 
 const DAILY_FREE_LIMIT_MESSAGE = 'Daily free cloud AI limit reached. Please upgrade to the Learner tier ($2) for premium cloud access.';
@@ -428,7 +428,7 @@ async function checkCapBeforeRoute(userId, { forceModel = null, hasImages = fals
 
 // ---------------------------------------------------------------------------
 // STACKED CLOUD FREE TIER DISPATCH
-// Attempt 1: OpenRouter Free API (deepseek/deepseek-r1:free or configured)
+// Attempt 1: OpenRouter Free API (configured zero-cost model)
 // Catch 429/503: Immediately failover to Attempt 2: Groq Free API (llama-3.1-8b-instant or configured)
 // Catch Final Failure: Return 503 with exact upgrade message
 // Strictly guarantees NEVER falling back to a paid model.
@@ -779,7 +779,6 @@ app.post('/webhooks/paystack', paystackRateLimiter, async (req, res) => {
           return res.status(200).json({ received: true, message: 'Already processed' });
         }
       } catch (e) { /* ignore if table not created yet */ }
-      processedWebhookIds.add(paystackRef);
     }
 
     let targetUserId = eventData.metadata?.user_id || eventData.customer?.metadata?.user_id;
@@ -800,7 +799,7 @@ app.post('/webhooks/paystack', paystackRateLimiter, async (req, res) => {
       const resolvedTier = tierCaps[planTier] ? planTier : 'starter';
 
       if (targetUserId) {
-        await supabase
+        const { error: subscriptionError } = await supabase
           .from('subscriptions')
           .upsert({
             user_id: targetUserId,
@@ -810,14 +809,16 @@ app.post('/webhooks/paystack', paystackRateLimiter, async (req, res) => {
           }, {
             onConflict: 'user_id'
           });
+        if (subscriptionError) throw subscriptionError;
         console.log(`[WEBHOOK] Activated subscription (${resolvedTier}) for user ${targetUserId}`);
       }
     } else if (eventType === 'subscription.disable') {
       if (targetUserId) {
-        await supabase
+        const { error: subscriptionError } = await supabase
           .from('subscriptions')
           .update({ status: 'cancelled' })
           .eq('user_id', targetUserId);
+        if (subscriptionError) throw subscriptionError;
         console.log(`[WEBHOOK] Cancelled subscription for user ${targetUserId}`);
       }
     }
@@ -840,15 +841,15 @@ app.post('/webhooks/paystack', paystackRateLimiter, async (req, res) => {
         // Fallback without provider column if schema migration not yet run
         if (insertErr.message && insertErr.message.includes('provider')) {
           delete eventInsert.provider;
-          await supabase.from('billing_events').insert(eventInsert).catch(e => {
-            console.error('[WEBHOOK] Failed to log fallback billing_event:', e.message);
-          });
+          const { error: fallbackError } = await supabase.from('billing_events').insert(eventInsert);
+          if (fallbackError) throw fallbackError;
         } else {
-          console.error('[WEBHOOK] Failed to log billing_event:', insertErr.message);
+          throw insertErr;
         }
       }
     }
 
+    if (paystackRef) processedWebhookIds.add(paystackRef);
     return res.status(200).json({ received: true });
   } catch (err) {
     console.error(`[WEBHOOK] Error processing event ${eventType}:`, err.message);
@@ -922,7 +923,6 @@ app.post('/webhooks/lemonsqueezy', lemonSqueezyRateLimiter, async (req, res) => 
           return res.status(200).json({ received: true, message: 'Already processed' });
         }
       } catch (e) { /* ignore if table not created yet */ }
-      processedWebhookIds.add(eventId);
     }
 
     // Resolve user: from custom_data.user_id, custom_data.userId, or attributes.user_email
@@ -965,7 +965,7 @@ app.post('/webhooks/lemonsqueezy', lemonSqueezyRateLimiter, async (req, res) => 
       eventName === 'subscription_resumed'
     ) {
       if (targetUserId) {
-        await supabase
+        const { error: subscriptionError } = await supabase
           .from('subscriptions')
           .upsert({
             user_id: targetUserId,
@@ -975,6 +975,7 @@ app.post('/webhooks/lemonsqueezy', lemonSqueezyRateLimiter, async (req, res) => 
           }, {
             onConflict: 'user_id'
           });
+        if (subscriptionError) throw subscriptionError;
         console.log(`[WEBHOOK-LS] Activated subscription (${resolvedTier}) for user ${targetUserId}`);
       }
     } else if (
@@ -982,10 +983,11 @@ app.post('/webhooks/lemonsqueezy', lemonSqueezyRateLimiter, async (req, res) => 
       eventName === 'subscription_expired'
     ) {
       if (targetUserId) {
-        await supabase
+        const { error: subscriptionError } = await supabase
           .from('subscriptions')
           .update({ status: 'cancelled' })
           .eq('user_id', targetUserId);
+        if (subscriptionError) throw subscriptionError;
         console.log(`[WEBHOOK-LS] Cancelled subscription for user ${targetUserId}`);
       }
     }
@@ -1015,15 +1017,15 @@ app.post('/webhooks/lemonsqueezy', lemonSqueezyRateLimiter, async (req, res) => 
           // Fallback if provider or event_id columns are not yet present
           delete billingInsert.provider;
           delete billingInsert.event_id;
-          await supabase.from('billing_events').insert(billingInsert).catch(e => {
-            console.error('[WEBHOOK-LS] Failed to log fallback billing_event:', e.message);
-          });
+          const { error: fallbackError } = await supabase.from('billing_events').insert(billingInsert);
+          if (fallbackError) throw fallbackError;
         } else {
-          console.error('[WEBHOOK-LS] Failed to log billing_event:', insertErr.message);
+          throw insertErr;
         }
       }
     }
 
+    if (eventId) processedWebhookIds.add(eventId);
     return res.status(200).json({ received: true });
   } catch (err) {
     console.error(`[WEBHOOK-LS] Error processing event ${eventName}:`, err.message);
@@ -1072,5 +1074,6 @@ module.exports = {
   checkCapBeforeRoute,
   tierCaps,
   FREE_TIER_MODELS,
-  DAILY_FREE_LIMIT_MESSAGE
+  DAILY_FREE_LIMIT_MESSAGE,
+  OPENROUTER_FREE_MODEL
 };
