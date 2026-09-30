@@ -8,8 +8,9 @@
   },
   "scripts": {
     "verify": "node verifier.js",
-    "test:syntax": "node -c verifier.js && node -c supabase-autosave.js && echo \"All files OK\"",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test:syntax": "node -c verifier.js && node -c supabase-autosave.js && node -c trust-badge.js && node -c cost-radar.js && echo \"All files OK\"",
+    "test": "node --test test-phase7.js",
+    "test:phase7": "node --test test-phase7.js"
   },
   "keywords": [],
   "author": "",
@@ -18,5 +19,9 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.114.0",
     "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.5",
+    "eslint-plugin-security": "^4.1.0"
   }
 }
