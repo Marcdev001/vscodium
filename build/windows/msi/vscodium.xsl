@@ -11,7 +11,8 @@
     </xsl:copy>
   </xsl:template>
 
-  <xsl:key name="vId1ToReplace" match="wi:Component[wi:File[contains(@Source,'@@PRODUCT_NAME@@.exe')]]" use="@Id"/>
+  <!-- Match the main executable file (looks for .exe in root, not in subdirectories) -->
+  <xsl:key name="vId1ToReplace" match="wi:Component[wi:File[contains(@Source,'.exe') and not(contains(@Source,'resources')) and not(contains(@Source,'node_modules'))]]" use="@Id"/>
   <xsl:template match="node()[key('vId1ToReplace', @Id)]">
     <xsl:copy>
       <xsl:attribute name="Id">VSCODIUM.EXE</xsl:attribute>
@@ -19,7 +20,7 @@
       <xsl:apply-templates />
     </xsl:copy>
   </xsl:template>
-  <xsl:template match="wi:Component/wi:File[contains(@Source,'@@PRODUCT_NAME@@.exe')]">
+  <xsl:template match="wi:Component/wi:File[contains(@Source,'.exe') and not(contains(@Source,'resources')) and not(contains(@Source,'node_modules'))]">
      <xsl:copy>
         <xsl:attribute name="Id">VSCODIUM.EXE</xsl:attribute>
         <xsl:copy-of select="@*[name()!='Id']"/>
