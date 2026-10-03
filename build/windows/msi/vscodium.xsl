@@ -11,8 +11,8 @@
     </xsl:copy>
   </xsl:template>
 
-  <!-- Match the main executable file (looks for .exe in root, not in subdirectories) -->
-  <xsl:key name="vId1ToReplace" match="wi:Component[wi:File[contains(@Source,'.exe') and not(contains(@Source,'resources')) and not(contains(@Source,'node_modules'))]]" use="@Id"/>
+  <!-- Match only the application executable; helper executables keep their harvested IDs. -->
+  <xsl:key name="vId1ToReplace" match="wi:Component[wi:File[substring(translate(@Source,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),string-length(@Source) - 10)='\albion.exe']]" use="@Id"/>
   <xsl:template match="node()[key('vId1ToReplace', @Id)]">
     <xsl:copy>
       <xsl:attribute name="Id">VSCODIUM.EXE</xsl:attribute>
@@ -20,7 +20,7 @@
       <xsl:apply-templates />
     </xsl:copy>
   </xsl:template>
-  <xsl:template match="wi:Component/wi:File[contains(@Source,'.exe') and not(contains(@Source,'resources')) and not(contains(@Source,'node_modules'))]">
+  <xsl:template match="wi:Component/wi:File[substring(translate(@Source,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),string-length(@Source) - 10)='\albion.exe']">
      <xsl:copy>
         <xsl:attribute name="Id">VSCODIUM.EXE</xsl:attribute>
         <xsl:copy-of select="@*[name()!='Id']"/>
