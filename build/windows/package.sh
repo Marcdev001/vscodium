@@ -9,6 +9,39 @@ fi
 
 tar -xzf ./vscode.tar.gz
 
+node <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const productPath = path.join('vscode', 'product.json');
+const product = JSON.parse(fs.readFileSync(productPath, 'utf8'));
+Object.assign(product, {
+  nameShort: 'Albion',
+  nameLong: 'Albion - The AI Code Editor for Africa',
+  applicationName: 'albion',
+  win32AppUserModelId: 'Albion.Editor',
+});
+fs.writeFileSync(productPath, `${JSON.stringify(product, null, 2)}\n`);
+
+const brandingDir = path.join('albion-branding');
+const windowsResources = path.join('vscode', 'resources', 'win32');
+fs.mkdirSync(windowsResources, { recursive: true });
+fs.copyFileSync(path.join(brandingDir, 'icon.ico'), path.join(windowsResources, 'code.ico'));
+fs.copyFileSync(path.join(brandingDir, 'logo.png'), path.join(windowsResources, 'albion-logo.png'));
+
+const innoPath = path.join('vscode', 'build', 'win32', 'code.iss');
+let inno = fs.readFileSync(innoPath, 'utf8');
+if (/^SetupLogging\s*=/im.test(inno)) {
+  inno = inno.replace(/^SetupLogging\s*=.*$/im, 'SetupLogging=yes');
+} else if (/^\[Setup\]\s*$/im.test(inno)) {
+  inno = inno.replace(/^\[Setup\]\s*$/im, (header) => `${header}\r\nSetupLogging=yes`);
+} else {
+  throw new Error(`Could not find [Setup] section in ${innoPath}`);
+}
+fs.writeFileSync(innoPath, inno);
+console.log('Applied Albion Windows branding and Inno Setup logging.');
+NODE
+
 cd vscode || { echo "'vscode' dir not found"; exit 1; }
 
 for i in {1..5}; do # try 5 times
