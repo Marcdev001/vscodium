@@ -35,6 +35,8 @@ permissions: {}
 jobs:
   compile:
     runs-on: windows-2022
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
@@ -75,6 +77,7 @@ jobs:
           SHOULD_BUILD: yes
           SHOULD_BUILD_REH: no
           SHOULD_BUILD_REH_WEB: no
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./build.sh
 
       - name: Compress vscode artifact
