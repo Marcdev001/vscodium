@@ -140,7 +140,7 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const OPENROUTER_ENDPOINT = process.env.OPENROUTER_ENDPOINT || 'https://openrouter.ai/api/v1/chat/completions';
 const GROQ_ENDPOINT = process.env.GROQ_ENDPOINT || 'https://api.groq.com/openai/v1/chat/completions';
-const OPENROUTER_FREE_MODEL = process.env.OPENROUTER_FREE_MODEL || 'qwen/qwen3.8-27b:free';
+const OPENROUTER_FREE_MODEL = process.env.OPENROUTER_FREE_MODEL || 'cohere/north-mini-code:free';
 const GROQ_FREE_MODEL = process.env.GROQ_FREE_MODEL || 'llama-3.1-8b-instant';
 
 const DAILY_FREE_LIMIT_MESSAGE = 'Daily free cloud AI limit reached. Please upgrade to the Learner tier ($2) for premium cloud access.';
